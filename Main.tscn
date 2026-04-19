@@ -24,10 +24,10 @@ anchor_left = 0.5
 anchor_top = 0.5
 anchor_right = 0.5
 anchor_bottom = 0.5
-offset_left = -300.0
-offset_top = -460.0
-offset_right = 300.0
-offset_bottom = 460.0
+offset_left = -340.0
+offset_top = -480.0
+offset_right = 340.0
+offset_bottom = 480.0
 alignment = 1
 
 [node name="Title" type="Label" parent="VBox"]
@@ -90,61 +90,6 @@ theme_override_colors/font_color = Color(0.7, 0.85, 1.0, 1)
 [node name="Spacer2" type="Control" parent="VBox"]
 layout_mode = 2
 custom_minimum_size = Vector2(0, 10)
-
-[node name="GridSizeRow" type="HBoxContainer" parent="VBox"]
-layout_mode = 2
-size_flags_horizontal = 4
-alignment = 1
-theme_override_constants/separation = 10
-
-[node name="GridSizeLabel" type="Label" parent="VBox/GridSizeRow"]
-layout_mode = 2
-text = "Grid size:"
-theme_override_font_sizes/font_size = 14
-theme_override_colors/font_color = Color(0.75, 0.75, 0.85, 1)
-
-[node name="GridSizeOption" type="OptionButton" parent="VBox/GridSizeRow"]
-layout_mode = 2
-custom_minimum_size = Vector2(90, 0)
-
-[node name="ShiftLimitRow" type="HBoxContainer" parent="VBox"]
-layout_mode = 2
-size_flags_horizontal = 4
-alignment = 1
-theme_override_constants/separation = 10
-
-[node name="ShiftLimitLabel" type="Label" parent="VBox/ShiftLimitRow"]
-layout_mode = 2
-text = "Arrow uses per player:"
-theme_override_font_sizes/font_size = 14
-theme_override_colors/font_color = Color(0.75, 0.75, 0.85, 1)
-
-[node name="ShiftLimitSpinBox" type="SpinBox" parent="VBox/ShiftLimitRow"]
-layout_mode = 2
-min_value = 0.0
-max_value = 99.0
-step = 1.0
-value = 3.0
-custom_minimum_size = Vector2(70, 0)
-
-[node name="ArrowsEndTurnCheckBox" type="CheckBox" parent="VBox/ShiftLimitRow"]
-layout_mode = 2
-text = "Arrows end turn"
-theme_override_font_sizes/font_size = 14
-theme_override_colors/font_color = Color(0.75, 0.75, 0.85, 1)
-
-[node name="BonusRow" type="HBoxContainer" parent="VBox"]
-layout_mode = 2
-size_flags_horizontal = 4
-alignment = 1
-theme_override_constants/separation = 10
-
-[node name="BonusCheckBox" type="CheckBox" parent="VBox/BonusRow"]
-layout_mode = 2
-button_pressed = true
-text = "Corner bonus  (+1 arrow on ★ squares)"
-theme_override_font_sizes/font_size = 14
-theme_override_colors/font_color = Color(0.75, 0.75, 0.85, 1)
 
 [node name="ShiftRemainingRow" type="HBoxContainer" parent="VBox"]
 layout_mode = 2
@@ -278,7 +223,63 @@ theme_override_colors/font_color = Color(1.0, 0.6, 0.4, 1)
 
 [node name="Spacer4" type="Control" parent="VBox"]
 layout_mode = 2
-custom_minimum_size = Vector2(0, 16)
+custom_minimum_size = Vector2(0, 12)
+
+[node name="MPLabel" type="Label" parent="VBox"]
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Multiplayer (Steam)"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 14
+theme_override_colors/font_color = Color(0.75, 0.75, 0.85, 1)
+
+[node name="MPRow" type="HBoxContainer" parent="VBox"]
+layout_mode = 2
+size_flags_horizontal = 4
+alignment = 1
+theme_override_constants/separation = 8
+
+[node name="HostButton" type="Button" parent="VBox/MPRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(70, 32)
+text = "Host"
+theme_override_font_sizes/font_size = 14
+
+[node name="LobbyIdEdit" type="LineEdit" parent="VBox/MPRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(220, 32)
+placeholder_text = "Lobby ID"
+
+[node name="JoinButton" type="Button" parent="VBox/MPRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(70, 32)
+text = "Join"
+theme_override_font_sizes/font_size = 14
+
+[node name="CopyButton" type="Button" parent="VBox/MPRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(60, 32)
+text = "Copy"
+theme_override_font_sizes/font_size = 14
+
+[node name="LeaveButton" type="Button" parent="VBox/MPRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(70, 32)
+text = "Leave"
+theme_override_font_sizes/font_size = 14
+disabled = true
+
+[node name="MPStatusLabel" type="Label" parent="VBox"]
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Not connected"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 13
+theme_override_colors/font_color = Color(0.7, 0.7, 0.8, 1)
+
+[node name="Spacer5" type="Control" parent="VBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 12)
 
 [node name="ButtonRow" type="HBoxContainer" parent="VBox"]
 layout_mode = 2
@@ -297,3 +298,118 @@ layout_mode = 2
 custom_minimum_size = Vector2(140, 44)
 text = "Reset Scores"
 theme_override_font_sizes/font_size = 18
+
+[node name="ConfigDialog" type="ConfirmationDialog" parent="."]
+title = "New Game Settings"
+size = Vector2i(520, 410)
+ok_button_text = "Start Game"
+cancel_button_text = "Cancel"
+
+[node name="ConfigBox" type="VBoxContainer" parent="ConfigDialog"]
+custom_minimum_size = Vector2(480, 300)
+theme_override_constants/separation = 12
+
+[node name="GridSizeRow" type="HBoxContainer" parent="ConfigDialog/ConfigBox"]
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 10
+
+[node name="GridSizeLabel" type="Label" parent="ConfigDialog/ConfigBox/GridSizeRow"]
+layout_mode = 2
+text = "Grid size:"
+theme_override_font_sizes/font_size = 14
+
+[node name="GridSizeOption" type="OptionButton" parent="ConfigDialog/ConfigBox/GridSizeRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(150, 0)
+
+[node name="MNKLabelRow" type="HBoxContainer" parent="ConfigDialog/ConfigBox"]
+layout_mode = 2
+alignment = 1
+
+[node name="MNKHeaderLabel" type="Label" parent="ConfigDialog/ConfigBox/MNKLabelRow"]
+layout_mode = 2
+text = "MNK (custom) dimensions — used only when Grid size = MNK:"
+theme_override_font_sizes/font_size = 13
+theme_override_colors/font_color = Color(0.7, 0.7, 0.8, 1)
+
+[node name="MNKRow" type="HBoxContainer" parent="ConfigDialog/ConfigBox"]
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 8
+
+[node name="MLabel" type="Label" parent="ConfigDialog/ConfigBox/MNKRow"]
+layout_mode = 2
+text = "M (rows):"
+theme_override_font_sizes/font_size = 14
+
+[node name="MSpin" type="SpinBox" parent="ConfigDialog/ConfigBox/MNKRow"]
+layout_mode = 2
+min_value = 3.0
+max_value = 12.0
+step = 1.0
+value = 5.0
+custom_minimum_size = Vector2(60, 0)
+
+[node name="NLabel" type="Label" parent="ConfigDialog/ConfigBox/MNKRow"]
+layout_mode = 2
+text = "N (cols):"
+theme_override_font_sizes/font_size = 14
+
+[node name="NSpin" type="SpinBox" parent="ConfigDialog/ConfigBox/MNKRow"]
+layout_mode = 2
+min_value = 3.0
+max_value = 12.0
+step = 1.0
+value = 5.0
+custom_minimum_size = Vector2(60, 0)
+
+[node name="KLabel" type="Label" parent="ConfigDialog/ConfigBox/MNKRow"]
+layout_mode = 2
+text = "K (in a row):"
+theme_override_font_sizes/font_size = 14
+
+[node name="KSpin" type="SpinBox" parent="ConfigDialog/ConfigBox/MNKRow"]
+layout_mode = 2
+min_value = 3.0
+max_value = 10.0
+step = 1.0
+value = 4.0
+custom_minimum_size = Vector2(60, 0)
+
+[node name="ShiftLimitRow" type="HBoxContainer" parent="ConfigDialog/ConfigBox"]
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 10
+
+[node name="ShiftLimitLabel" type="Label" parent="ConfigDialog/ConfigBox/ShiftLimitRow"]
+layout_mode = 2
+text = "Arrow uses per player:"
+theme_override_font_sizes/font_size = 14
+
+[node name="ShiftLimitSpinBox" type="SpinBox" parent="ConfigDialog/ConfigBox/ShiftLimitRow"]
+layout_mode = 2
+min_value = 0.0
+max_value = 99.0
+step = 1.0
+value = 3.0
+custom_minimum_size = Vector2(70, 0)
+
+[node name="ArrowsEndTurnRow" type="HBoxContainer" parent="ConfigDialog/ConfigBox"]
+layout_mode = 2
+alignment = 1
+
+[node name="ArrowsEndTurnCheckBox" type="CheckBox" parent="ConfigDialog/ConfigBox/ArrowsEndTurnRow"]
+layout_mode = 2
+text = "Arrows end turn"
+theme_override_font_sizes/font_size = 14
+
+[node name="BonusRow" type="HBoxContainer" parent="ConfigDialog/ConfigBox"]
+layout_mode = 2
+alignment = 1
+
+[node name="BonusCheckBox" type="CheckBox" parent="ConfigDialog/ConfigBox/BonusRow"]
+layout_mode = 2
+button_pressed = true
+text = "Corner bonus  (+1 arrow on ★ squares)"
+theme_override_font_sizes/font_size = 14

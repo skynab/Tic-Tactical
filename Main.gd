@@ -1,18 +1,25 @@
 extends Control
 
-# Generalized to an N x N board.
-# grid_size determines layout and win conditions:
-#   - 3x3: rows, columns, and two diagonals (classic)
-#   - 4x4: rows, columns, two diagonals, 2x2 squares, and diamonds.
-#     A "square" is four cells forming any 2x2 block of matching marks.
-#     A "diamond" is the four cells surrounding a single center cell
-#     (up, left, right, down) all matching.
+# Generalized to an M x N (cols x rows) board with a configurable "k in a
+# row" win length. Three grid modes are selectable from the UI:
+#   - "3x3"  : 3x3 board, win = 3-in-a-row (classic).
+#   - "4x4"  : 4x4 board, win = 4-in-a-row PLUS 2x2 squares and diamonds
+#              (four matching marks surrounding a center cell).
+#   - "MNK"  : user-chosen columns (M), rows (N), and line length (K).
+#              Wins are pure k-in-a-row (horizontal, vertical, or diagonal),
+#              matching the m,n,k-game definition on Wikipedia.
 #
-# Board is a flat array of length grid_size * grid_size, row-major.
+# Board is a flat array of length grid_cols * grid_rows, row-major.
+# Cell index at column c, row r is `r * grid_cols + c`.
 # 0 = empty, 1 = X, 2 = O.
 const CellScript = preload("res://Cell.gd")
 
-var grid_size := 3
+enum GridMode { THREE = 3, FOUR = 4, MNK = -1 }
+
+var grid_cols := 3   # M
+var grid_rows := 3   # N
+var win_length := 3  # K
+var grid_mode: int = GridMode.THREE
 var board: Array = []
 var current_player := 1
 var game_over := false
@@ -23,7 +30,7 @@ var scores := {1: 0, 2: 0, "draw": 0}
 var max_shifts := 3
 var shifts_left := {1: 3, 2: 3}
 
-# Computed whenever grid_size changes.
+# Computed whenever the board dimensions or win length change.
 var win_lines: Array = []
 
 # "Corner bonus" feature: when enabled, a new game arms the four corner
@@ -56,10 +63,36 @@ var grid_size_option: OptionButton
 var grid_container: GridContainer
 var bonus_checkbox: CheckBox
 var arrows_end_turn_checkbox: CheckBox
+var mnk_row: HBoxContainer
+var mnk_m_spin: SpinBox
+var mnk_n_spin: SpinBox
+var mnk_k_spin: SpinBox
 var turn_x_box: Panel
 var turn_o_box: Panel
 var turn_x_label: Label
 var turn_o_label: Label
+# "New Game Settings" popup that holds all game-config controls. Opened by
+# the New Game button; its OK button ("Start Game") confirms the settings
+# and starts a fresh game via _on_restart_pressed.
+var config_dialog: ConfirmationDialog
+
+# ---- Multiplayer (Steam) ----
+# When `multiplayer_enabled` is true, input is gated by whose turn it is,
+# and every user action is broadcast to the opponent via the Multiplayer
+# autoload. `my_side` is the side this instance controls (1 = X, 2 = O).
+# `applying_remote` is true while we're processing an inbound network
+# message, which suppresses re-broadcasting the action we're applying.
+var multiplayer_enabled := false
+var is_net_host := false
+var my_side := 0
+var applying_remote := false
+
+var mp_host_button: Button
+var mp_join_button: Button
+var mp_lobby_edit: LineEdit
+var mp_copy_button: Button
+var mp_leave_button: Button
+var mp_status_label: Label
 
 func _ready() -> void:
 	status_label = $VBox/StatusLabel
@@ -69,7 +102,10 @@ func _ready() -> void:
 
 	grid_container = $VBox/GridRow/GridContainer
 
-	$VBox/ButtonRow/RestartButton.pressed.connect(_on_restart_pressed)
+	# The New Game button opens the config dialog; pressing its OK button
+	# ("Start Game") fires `confirmed`, which is what actually starts a
+	# fresh game via _on_restart_pressed.
+	$VBox/ButtonRow/RestartButton.pressed.connect(_on_new_game_pressed)
 	$VBox/ButtonRow/ResetScoresButton.pressed.connect(_on_reset_scores_pressed)
 
 	shift_up_button = $VBox/ShiftUpRow/ShiftUpButton
@@ -81,47 +117,82 @@ func _ready() -> void:
 	shift_left_button.pressed.connect(_on_shift.bind("left"))
 	shift_right_button.pressed.connect(_on_shift.bind("right"))
 
-	shift_limit_spin = $VBox/ShiftLimitRow/ShiftLimitSpinBox
+	# Config-dialog controls all live under ConfigDialog/ConfigBox in the scene.
+	config_dialog = $ConfigDialog
+	config_dialog.confirmed.connect(_on_restart_pressed)
+	# If the user cancels (X button, Escape, or Cancel), re-sync the dialog's
+	# controls to the currently-applied state so stray edits don't leak.
+	config_dialog.canceled.connect(_sync_ui_to_applied_state)
+
+	shift_limit_spin = $ConfigDialog/ConfigBox/ShiftLimitRow/ShiftLimitSpinBox
 	shift_remaining_x = $VBox/ShiftRemainingRow/ShiftRemainingX
 	shift_remaining_o = $VBox/ShiftRemainingRow/ShiftRemainingO
 	max_shifts = int(shift_limit_spin.value)
 	shifts_left = {1: max_shifts, 2: max_shifts}
-	shift_limit_spin.value_changed.connect(_on_shift_limit_changed)
 
-	grid_size_option = $VBox/GridSizeRow/GridSizeOption
+	grid_size_option = $ConfigDialog/ConfigBox/GridSizeRow/GridSizeOption
 	grid_size_option.clear()
-	grid_size_option.add_item("3x3", 3)
-	grid_size_option.add_item("4x4", 4)
-	# Default selection matches current grid_size.
-	grid_size_option.select(grid_size_option.get_item_index(grid_size))
+	grid_size_option.add_item("3x3", GridMode.THREE)
+	grid_size_option.add_item("4x4", GridMode.FOUR)
+	grid_size_option.add_item("MNK (custom)", GridMode.MNK)
+	# Default selection matches current grid_mode.
+	grid_size_option.select(grid_size_option.get_item_index(grid_mode))
 	grid_size_option.item_selected.connect(_on_grid_size_selected)
 
-	bonus_checkbox = $VBox/BonusRow/BonusCheckBox
-	bonus_checkbox.button_pressed = corner_bonuses_enabled
-	bonus_checkbox.toggled.connect(_on_bonus_toggled)
+	mnk_row = $ConfigDialog/ConfigBox/MNKRow
+	mnk_m_spin = $ConfigDialog/ConfigBox/MNKRow/MSpin
+	mnk_n_spin = $ConfigDialog/ConfigBox/MNKRow/NSpin
+	mnk_k_spin = $ConfigDialog/ConfigBox/MNKRow/KSpin
+	_refresh_mnk_row_visibility()
 
-	arrows_end_turn_checkbox = $VBox/ShiftLimitRow/ArrowsEndTurnCheckBox
+	bonus_checkbox = $ConfigDialog/ConfigBox/BonusRow/BonusCheckBox
+	bonus_checkbox.button_pressed = corner_bonuses_enabled
+
+	arrows_end_turn_checkbox = $ConfigDialog/ConfigBox/ArrowsEndTurnRow/ArrowsEndTurnCheckBox
 	arrows_end_turn_checkbox.button_pressed = arrows_end_turn
-	arrows_end_turn_checkbox.toggled.connect(_on_arrows_end_turn_toggled)
 
 	turn_x_box = $VBox/TurnIndicatorRow/TurnXBox
 	turn_o_box = $VBox/TurnIndicatorRow/TurnOBox
 	turn_x_label = $VBox/TurnIndicatorRow/TurnXBox/TurnXLabel
 	turn_o_label = $VBox/TurnIndicatorRow/TurnOBox/TurnOLabel
 
+	# Multiplayer UI + autoload wiring.
+	mp_host_button = $VBox/MPRow/HostButton
+	mp_join_button = $VBox/MPRow/JoinButton
+	mp_lobby_edit = $VBox/MPRow/LobbyIdEdit
+	mp_copy_button = $VBox/MPRow/CopyButton
+	mp_leave_button = $VBox/MPRow/LeaveButton
+	mp_status_label = $VBox/MPStatusLabel
+	mp_host_button.pressed.connect(_on_host_pressed)
+	mp_join_button.pressed.connect(_on_join_pressed)
+	mp_copy_button.pressed.connect(_on_copy_pressed)
+	mp_leave_button.pressed.connect(_on_leave_pressed)
+	if Multiplayer != null:
+		Multiplayer.hosting_started.connect(_on_mp_hosting_started)
+		Multiplayer.opponent_joined.connect(_on_mp_opponent_joined)
+		Multiplayer.join_succeeded.connect(_on_mp_join_succeeded)
+		Multiplayer.message_received.connect(_on_mp_message)
+		Multiplayer.disconnected_from_lobby.connect(_on_mp_disconnected)
+		Multiplayer.error_reported.connect(_on_mp_error)
+		if not Multiplayer.is_plugin_available():
+			mp_status_label.text = "GodotSteam plugin not installed — see SETUP_STEAM.md"
+			mp_host_button.disabled = true
+			mp_join_button.disabled = true
+
 	_rebuild_board()
 	_init_corner_bonuses()
 	_refresh_bonus_icons()
 	_update_shift_ui()
 	_refresh_turn_indicator()
+	_update_mp_ui()
 
 # ---------------------------------------------------------------------------
 # Board construction
 # ---------------------------------------------------------------------------
 
 # Rebuild the board array, cell buttons, and win-lines for the current
-# grid_size. Called on startup and on New Game (when grid size may have
-# changed via the OptionButton).
+# grid_cols / grid_rows / win_length. Called on startup and on New Game
+# (when any of those may have changed via the UI).
 func _rebuild_board() -> void:
 	# Clear existing cell buttons. remove_child first so the GridContainer
 	# layout updates immediately (queue_free alone is deferred).
@@ -130,18 +201,30 @@ func _rebuild_board() -> void:
 		child.queue_free()
 	cells.clear()
 
-	grid_container.columns = grid_size
-	var n := grid_size
+	grid_container.columns = grid_cols
+	var total := grid_cols * grid_rows
 	board = []
-	board.resize(n * n)
-	for i in range(n * n):
+	board.resize(total)
+	for i in range(total):
 		board[i] = 0
 
-	# Size cells so the board stays visually comparable between 3x3 and 4x4.
-	var cell_px := 110 if n == 3 else 85
-	var font_px := 56 if n == 3 else 44
+	# Size cells so the board stays visually comparable across modes.
+	# 3x3 and 4x4 presets keep their original sizes; larger MNK boards
+	# scale the cell size down.
+	var cell_px: int
+	var font_px: int
+	if grid_cols == 3 and grid_rows == 3:
+		cell_px = 110
+		font_px = 56
+	elif grid_cols == 4 and grid_rows == 4:
+		cell_px = 85
+		font_px = 44
+	else:
+		var dim: int = max(grid_cols, grid_rows)
+		cell_px = clampi(int(480.0 / float(dim)), 32, 95)
+		font_px = clampi(int(cell_px * 0.6), 18, 56)
 
-	for i in range(n * n):
+	for i in range(total):
 		var b := Button.new()
 		b.set_script(CellScript)
 		b.custom_minimum_size = Vector2(cell_px, cell_px)
@@ -151,60 +234,63 @@ func _rebuild_board() -> void:
 		b.pressed.connect(_on_cell_pressed.bind(i))
 		cells.append(b)
 
-	win_lines = _generate_win_lines(n)
+	var include_square_diamond: bool = grid_mode == GridMode.FOUR
+	win_lines = _generate_win_lines(grid_cols, grid_rows, win_length, include_square_diamond)
 
-# Build the list of winning lines for an N x N board.
-# For n == 3, this is the classic 8 lines (3 rows, 3 cols, 2 diagonals).
-# For n == 4, we additionally include every 2x2 square and every diamond
-# (four cells surrounding a center cell: up, left, right, down).
-func _generate_win_lines(n: int) -> Array:
+# Build the list of winning lines for a cols x rows board where a win is
+# `k` matching marks in a horizontal, vertical, or diagonal line. When
+# `include_square_diamond` is true (only used for the 4x4 preset), also
+# appends every 2x2 square and every 4-cell diamond (four matching marks
+# in the cells directly above, below, left, and right of any single
+# center cell — the center itself is not part of the line).
+func _generate_win_lines(cols: int, rows: int, k: int, include_square_diamond: bool) -> Array:
 	var lines: Array = []
+	if k < 1:
+		return lines
 
-	# Rows
-	for r in range(n):
-		var row: Array = []
-		for c in range(n):
-			row.append(r * n + c)
-		lines.append(row)
+	# Horizontal k-in-a-row
+	if cols >= k:
+		for r in range(rows):
+			for c in range(cols - k + 1):
+				var line: Array = []
+				for i in range(k):
+					line.append(r * cols + c + i)
+				lines.append(line)
+	# Vertical k-in-a-row
+	if rows >= k:
+		for r in range(rows - k + 1):
+			for c in range(cols):
+				var line: Array = []
+				for i in range(k):
+					line.append((r + i) * cols + c)
+				lines.append(line)
+	# Diagonal top-left to bottom-right (slope down-right)
+	if rows >= k and cols >= k:
+		for r in range(rows - k + 1):
+			for c in range(cols - k + 1):
+				var line: Array = []
+				for i in range(k):
+					line.append((r + i) * cols + (c + i))
+				lines.append(line)
+	# Diagonal top-right to bottom-left (slope down-left)
+	if rows >= k and cols >= k:
+		for r in range(rows - k + 1):
+			for c in range(k - 1, cols):
+				var line: Array = []
+				for i in range(k):
+					line.append((r + i) * cols + (c - i))
+				lines.append(line)
 
-	# Columns
-	for c in range(n):
-		var col: Array = []
-		for r in range(n):
-			col.append(r * n + c)
-		lines.append(col)
-
-	# Two main diagonals (full-length)
-	var diag1: Array = []
-	var diag2: Array = []
-	for i in range(n):
-		diag1.append(i * n + i)
-		diag2.append(i * n + (n - 1 - i))
-	lines.append(diag1)
-	lines.append(diag2)
-
-	# 4x4-only win shapes: 2x2 squares and diamonds.
-	if n == 4:
-		# 2x2 squares: top-left corner at (r, c) for r, c in [0, n-2].
-		for r in range(n - 1):
-			for c in range(n - 1):
-				var tl := r * n + c
-				var tr := tl + 1
-				var bl := tl + n
-				var br := bl + 1
-				lines.append([tl, tr, bl, br])
-		# Diamonds: center at (r, c) with 1 <= r <= n-2 and 1 <= c <= n-2.
-		# The diamond consists of the four orthogonal neighbors of the center
-		# (up, left, right, down). The center cell itself is NOT part of the
-		# winning line; only the four surrounding cells must match.
-		for r in range(1, n - 1):
-			for c in range(1, n - 1):
-				var center := r * n + c
-				var up := center - n
-				var left := center - 1
-				var right := center + 1
-				var down := center + n
-				lines.append([up, left, right, down])
+	# 4x4-preset-only extras: 2x2 squares and diamonds.
+	if include_square_diamond and cols >= 2 and rows >= 2:
+		for r in range(rows - 1):
+			for c in range(cols - 1):
+				var tl := r * cols + c
+				lines.append([tl, tl + 1, tl + cols, tl + cols + 1])
+		for r in range(1, rows - 1):
+			for c in range(1, cols - 1):
+				var center := r * cols + c
+				lines.append([center - cols, center - 1, center + 1, center + cols])
 
 	return lines
 
@@ -215,6 +301,13 @@ func _generate_win_lines(n: int) -> Array:
 func _on_cell_pressed(index: int) -> void:
 	if game_over or board[index] != 0:
 		return
+	# In a network game, only the local side's player can initiate a move;
+	# moves received from the opponent arrive through _on_mp_message with
+	# applying_remote=true and bypass this gate.
+	if multiplayer_enabled and not applying_remote:
+		if current_player != my_side:
+			return
+		Multiplayer.send({"t": "click", "i": index})
 	board[index] = current_player
 	cells[index].set_mark(current_player)
 	# If this corner was armed with a bonus, grant the current player +1
@@ -262,38 +355,46 @@ func _on_shift(direction: String) -> void:
 		return
 	if shifts_left.get(current_player, 0) <= 0:
 		return
+	# Only the side whose turn it is may press arrows; remote shifts arrive
+	# via _on_mp_message with applying_remote=true.
+	if multiplayer_enabled and not applying_remote:
+		if current_player != my_side:
+			return
+		Multiplayer.send({"t": "shift", "d": direction})
 
 	shifts_left[current_player] -= 1
 
-	var n := grid_size
+	var cols := grid_cols
+	var rows := grid_rows
+	var total := cols * rows
 	var new_board: Array = []
-	new_board.resize(n * n)
-	for i in range(n * n):
+	new_board.resize(total)
+	for i in range(total):
 		new_board[i] = 0
 
 	match direction:
 		"up":
 			# Each column shifts up by one; top row falls off, bottom row clears.
-			for c in range(n):
-				for r in range(n - 1):
-					new_board[r * n + c] = board[(r + 1) * n + c]
-				new_board[(n - 1) * n + c] = 0
+			for c in range(cols):
+				for r in range(rows - 1):
+					new_board[r * cols + c] = board[(r + 1) * cols + c]
+				new_board[(rows - 1) * cols + c] = 0
 		"down":
 			# Each column shifts down by one; bottom row falls off, top row clears.
-			for c in range(n):
-				for r in range(n - 1, 0, -1):
-					new_board[r * n + c] = board[(r - 1) * n + c]
+			for c in range(cols):
+				for r in range(rows - 1, 0, -1):
+					new_board[r * cols + c] = board[(r - 1) * cols + c]
 				new_board[c] = 0
 		"left":
-			for r in range(n):
-				for c in range(n - 1):
-					new_board[r * n + c] = board[r * n + c + 1]
-				new_board[r * n + (n - 1)] = 0
+			for r in range(rows):
+				for c in range(cols - 1):
+					new_board[r * cols + c] = board[r * cols + c + 1]
+				new_board[r * cols + (cols - 1)] = 0
 		"right":
-			for r in range(n):
-				for c in range(n - 1, 0, -1):
-					new_board[r * n + c] = board[r * n + c - 1]
-				new_board[r * n] = 0
+			for r in range(rows):
+				for c in range(cols - 1, 0, -1):
+					new_board[r * cols + c] = board[r * cols + c - 1]
+				new_board[r * cols] = 0
 
 	board = new_board
 	_refresh_cells()
@@ -372,6 +473,11 @@ func _update_status() -> void:
 	status_label.add_theme_color_override("font_color", col)
 
 func _on_reset_scores_pressed() -> void:
+	# In a network game, only the host may reset the shared scores.
+	if multiplayer_enabled and not applying_remote:
+		if not is_net_host:
+			return
+		Multiplayer.send({"t": "reset_scores"})
 	scores = {1: 0, 2: 0, "draw": 0}
 	score_x.text = "0"
 	score_o.text = "0"
@@ -379,13 +485,53 @@ func _on_reset_scores_pressed() -> void:
 	_on_restart_pressed()
 
 func _on_restart_pressed() -> void:
+	# In a network game, only the host may start a new game. The host
+	# broadcasts the settings so the client mirrors them exactly.
+	if multiplayer_enabled and not applying_remote:
+		if not is_net_host:
+			return
+		Multiplayer.send({
+			"t": "new_game",
+			"grid_mode": int(grid_size_option.get_selected_id()),
+			"mnk_m": int(mnk_m_spin.value),
+			"mnk_n": int(mnk_n_spin.value),
+			"mnk_k": int(mnk_k_spin.value),
+			"max_shifts": int(shift_limit_spin.value),
+			"corner_bonus": bonus_checkbox.button_pressed,
+			"arrows_end_turn": arrows_end_turn_checkbox.button_pressed,
+		})
 	# Apply pending settings for the new game.
-	var selected_size := int(grid_size_option.get_selected_id())
-	if selected_size != grid_size:
-		grid_size = selected_size
+	var selected_mode := int(grid_size_option.get_selected_id())
+	var new_cols: int
+	var new_rows: int
+	var new_k: int
+	match selected_mode:
+		GridMode.THREE:
+			new_cols = 3; new_rows = 3; new_k = 3
+		GridMode.FOUR:
+			new_cols = 4; new_rows = 4; new_k = 4
+		GridMode.MNK, _:
+			# M = rows, N = columns (matches the m,n,k-game convention on
+			# Wikipedia: "played on an m-by-n board").
+			new_rows = int(mnk_m_spin.value)
+			new_cols = int(mnk_n_spin.value)
+			new_k = int(mnk_k_spin.value)
+			# K can't exceed the longest dimension or there'd be no possible win.
+			new_k = mini(new_k, maxi(new_cols, new_rows))
+	var dimensions_changed: bool = (
+		selected_mode != grid_mode
+		or new_cols != grid_cols
+		or new_rows != grid_rows
+		or new_k != win_length
+	)
+	grid_mode = selected_mode
+	grid_cols = new_cols
+	grid_rows = new_rows
+	win_length = new_k
+	if dimensions_changed:
 		_rebuild_board()
 	else:
-		# Same size: just reset the board contents.
+		# Same dimensions: just reset the board contents.
 		for i in range(board.size()):
 			board[i] = 0
 		for cell in cells:
@@ -402,48 +548,82 @@ func _on_restart_pressed() -> void:
 	_init_corner_bonuses()
 	_refresh_bonus_icons()
 
+	# Apply the "arrows end turn" rule for the new game.
+	if arrows_end_turn_checkbox != null:
+		arrows_end_turn = arrows_end_turn_checkbox.button_pressed
+
 	current_player = 1
 	game_over = false
 	_update_shift_ui()
 	_update_status()
 	_refresh_turn_indicator()
+	_update_mp_ui()
 
 func _apply_cell_styles() -> void:
 	for cell in cells:
 		cell.apply_base_style()
 
-func _on_shift_limit_changed(new_value: float) -> void:
-	# Takes effect on the next New Game for raises; lowering clamps existing
-	# remaining counts immediately so the display stays sensible.
-	var new_max := int(new_value)
-	if shifts_left[1] > new_max:
-		shifts_left[1] = new_max
-	if shifts_left[2] > new_max:
-		shifts_left[2] = new_max
-	max_shifts = new_max
-	_update_shift_ui()
+# Called when the user clicks the "New Game" button. Pre-fills the config
+# dialog's controls with the currently-applied game settings, then shows
+# the dialog. The actual reset happens when the user clicks "Start Game"
+# (the dialog's OK button), which fires `confirmed` and calls
+# `_on_restart_pressed`.
+func _on_new_game_pressed() -> void:
+	# In a network game, only the host can change settings / start a new game.
+	if multiplayer_enabled and not is_net_host:
+		return
+	_sync_ui_to_applied_state()
+	config_dialog.popup_centered()
+
+# Reset every dialog control so it shows the game's currently-applied state.
+# Called on dialog open (so opening always reflects reality) and on cancel
+# (so a discarded edit doesn't stick around for the next open).
+func _sync_ui_to_applied_state() -> void:
+	if grid_size_option != null:
+		var idx := grid_size_option.get_item_index(grid_mode)
+		if idx >= 0:
+			grid_size_option.select(idx)
+	if mnk_m_spin != null:
+		mnk_m_spin.value = float(grid_rows)
+		mnk_n_spin.value = float(grid_cols)
+		mnk_k_spin.value = float(win_length)
+	if shift_limit_spin != null:
+		shift_limit_spin.value = float(max_shifts)
+	if arrows_end_turn_checkbox != null:
+		arrows_end_turn_checkbox.button_pressed = arrows_end_turn
+	if bonus_checkbox != null:
+		bonus_checkbox.button_pressed = corner_bonuses_enabled
+	_refresh_mnk_row_visibility()
 
 func _on_grid_size_selected(_index: int) -> void:
-	# Grid size takes effect on the next New Game, matching the arrow-limit
-	# behavior. Show a hint in the status when a pending change is queued.
-	var selected_size := int(grid_size_option.get_selected_id())
-	if game_over:
+	# The M/N/K spinboxes are always visible in the dialog, but we grey them
+	# out (disabled) whenever the selected mode isn't MNK — a visual cue that
+	# the values only take effect when MNK is chosen. The actual grid rebuild
+	# happens when the user presses Start Game.
+	_refresh_mnk_row_visibility()
+
+# The M/N/K row is always visible in the popup so the settings are
+# discoverable regardless of grid mode, but the spinboxes are editable only
+# when MNK is the selected mode. In non-MNK modes the values are ignored.
+func _refresh_mnk_row_visibility() -> void:
+	if mnk_row == null or grid_size_option == null:
 		return
-	if selected_size != grid_size:
-		status_label.text = "Grid size %dx%d queued — press New Game" % [selected_size, selected_size]
-		status_label.add_theme_color_override("font_color", Color(0.85, 0.85, 0.6))
-	else:
-		# Restore the normal turn status (user reverted their selection).
-		_update_status()
+	var mnk_active: bool = int(grid_size_option.get_selected_id()) == GridMode.MNK
+	if mnk_m_spin != null:
+		mnk_m_spin.editable = mnk_active
+		mnk_n_spin.editable = mnk_active
+		mnk_k_spin.editable = mnk_active
 
 # ---------------------------------------------------------------------------
 # Corner-bonus helpers
 # ---------------------------------------------------------------------------
 
-# Returns the four corner indices for the current grid_size.
+# Returns the four corner indices for the current board (top-left, top-right,
+# bottom-left, bottom-right).
 func _corner_indices() -> Array:
-	var n := grid_size
-	return [0, n - 1, (n - 1) * n, n * n - 1]
+	var cols := grid_cols
+	var rows := grid_rows
+	return [0, cols - 1, (rows - 1) * cols, rows * cols - 1]
 
 # Arm all four corner cells with a bonus (if the feature is enabled).
 func _init_corner_bonuses() -> void:
@@ -462,18 +642,6 @@ func _refresh_bonus_icons() -> void:
 		var visible_bonus: bool = corner_bonus_armed.get(i, false) and board[i] == 0
 		cells[i].set_bonus(visible_bonus)
 
-func _on_bonus_toggled(pressed: bool) -> void:
-	# Takes effect on the next New Game — keep consistent with other options.
-	corner_bonuses_enabled = pressed
-	if not game_over:
-		status_label.text = "Corner bonus %s — press New Game" % (
-			"enabled" if pressed else "disabled")
-		status_label.add_theme_color_override("font_color", Color(0.85, 0.85, 0.6))
-
-func _on_arrows_end_turn_toggled(pressed: bool) -> void:
-	# Takes effect immediately — this is a pure rule change with no board state.
-	arrows_end_turn = pressed
-
 # ---------------------------------------------------------------------------
 # Turn indicator
 # ---------------------------------------------------------------------------
@@ -488,6 +656,17 @@ func _refresh_turn_indicator() -> void:
 	var o_active: bool = not game_over and current_player == 2
 	_apply_turn_chip(turn_x_box, turn_x_label, x_active, Color(0.4, 0.8, 1.0))
 	_apply_turn_chip(turn_o_box, turn_o_label, o_active, Color(1.0, 0.6, 0.4))
+	# Mark which side the local user controls in a networked game.
+	if multiplayer_enabled:
+		turn_x_label.text = "X (You)" if my_side == 1 else "X"
+		turn_o_label.text = "O (You)" if my_side == 2 else "O"
+		turn_x_label.add_theme_font_size_override("font_size", 22)
+		turn_o_label.add_theme_font_size_override("font_size", 22)
+	else:
+		turn_x_label.text = "X"
+		turn_o_label.text = "O"
+		turn_x_label.add_theme_font_size_override("font_size", 36)
+		turn_o_label.add_theme_font_size_override("font_size", 36)
 
 func _apply_turn_chip(panel: Panel, label: Label, active: bool, player_color: Color) -> void:
 	var style := StyleBoxFlat.new()
@@ -525,6 +704,9 @@ func _update_shift_ui() -> void:
 		shift_remaining_o.text = "O arrows: %d" % shifts_left.get(2, 0)
 	var out_of_shifts: bool = shifts_left.get(current_player, 0) <= 0
 	var disabled: bool = game_over or out_of_shifts
+	# In a network game, the opponent's arrows are locked on your machine.
+	if multiplayer_enabled and current_player != my_side:
+		disabled = true
 	if shift_up_button != null:
 		shift_up_button.disabled = disabled
 	if shift_down_button != null:
@@ -533,3 +715,123 @@ func _update_shift_ui() -> void:
 		shift_left_button.disabled = disabled
 	if shift_right_button != null:
 		shift_right_button.disabled = disabled
+
+# ---------------------------------------------------------------------------
+# Multiplayer button / signal handlers
+# ---------------------------------------------------------------------------
+
+func _on_host_pressed() -> void:
+	mp_status_label.text = "Connecting to Steam..."
+	Multiplayer.host()
+
+func _on_join_pressed() -> void:
+	var id_str := mp_lobby_edit.text.strip_edges()
+	if id_str == "":
+		mp_status_label.text = "Paste a lobby ID first."
+		return
+	mp_status_label.text = "Joining lobby..."
+	Multiplayer.join(id_str)
+
+func _on_copy_pressed() -> void:
+	if mp_lobby_edit.text == "":
+		return
+	DisplayServer.clipboard_set(mp_lobby_edit.text)
+	mp_status_label.text = "Lobby ID copied to clipboard."
+
+func _on_leave_pressed() -> void:
+	Multiplayer.leave()
+	# Local teardown; _on_mp_disconnected will handle UI refresh.
+
+func _on_mp_hosting_started(lobby_id_str: String) -> void:
+	mp_lobby_edit.text = lobby_id_str
+	mp_status_label.text = "Hosting — share this Lobby ID, then wait for opponent."
+	mp_leave_button.disabled = false
+
+func _on_mp_opponent_joined() -> void:
+	multiplayer_enabled = true
+	is_net_host = true
+	my_side = 1  # host = X
+	mp_status_label.text = "Opponent joined. You are X."
+	_update_mp_ui()
+	# Start a fresh game; _on_restart_pressed broadcasts the settings.
+	_on_restart_pressed()
+
+func _on_mp_join_succeeded() -> void:
+	multiplayer_enabled = true
+	is_net_host = false
+	my_side = 2  # client = O
+	mp_status_label.text = "Connected. You are O. Waiting for host to start..."
+	_update_mp_ui()
+
+func _on_mp_disconnected(reason: String) -> void:
+	multiplayer_enabled = false
+	is_net_host = false
+	my_side = 0
+	mp_status_label.text = reason
+	_update_mp_ui()
+	_refresh_turn_indicator()
+	_update_shift_ui()
+
+func _on_mp_error(msg: String) -> void:
+	mp_status_label.text = msg
+
+# Handle a message from the opponent. Each message describes one user
+# action; we re-apply it locally with `applying_remote=true` so the same
+# handlers run but don't echo the action back over the network.
+func _on_mp_message(data: Variant) -> void:
+	if typeof(data) != TYPE_DICTIONARY:
+		return
+	applying_remote = true
+	var t := str(data.get("t", ""))
+	match t:
+		"click":
+			var i := int(data.get("i", -1))
+			if i >= 0 and i < cells.size():
+				_on_cell_pressed(i)
+		"shift":
+			var d := str(data.get("d", ""))
+			if d in ["up", "down", "left", "right"]:
+				_on_shift(d)
+		"new_game":
+			# Only the client needs to sync settings from the host.
+			if not is_net_host:
+				var gm := int(data.get("grid_mode", grid_mode))
+				var idx := grid_size_option.get_item_index(gm)
+				if idx >= 0:
+					grid_size_option.select(idx)
+				mnk_m_spin.value = float(int(data.get("mnk_m", int(mnk_m_spin.value))))
+				mnk_n_spin.value = float(int(data.get("mnk_n", int(mnk_n_spin.value))))
+				mnk_k_spin.value = float(int(data.get("mnk_k", int(mnk_k_spin.value))))
+				shift_limit_spin.value = float(int(data.get("max_shifts", max_shifts)))
+				bonus_checkbox.button_pressed = bool(data.get("corner_bonus", corner_bonuses_enabled))
+				arrows_end_turn_checkbox.button_pressed = bool(data.get("arrows_end_turn", arrows_end_turn))
+				arrows_end_turn = arrows_end_turn_checkbox.button_pressed
+				_refresh_mnk_row_visibility()
+			_on_restart_pressed()
+		"reset_scores":
+			_on_reset_scores_pressed()
+	applying_remote = false
+
+# Update enabled/disabled state for every multiplayer-affected control.
+func _update_mp_ui() -> void:
+	if mp_host_button == null:
+		return
+	var plugin_ok := Multiplayer != null and Multiplayer.is_plugin_available()
+	var in_lobby := multiplayer_enabled or (Multiplayer != null and Multiplayer.is_connected_in_lobby())
+	mp_host_button.disabled = (not plugin_ok) or in_lobby
+	mp_join_button.disabled = (not plugin_ok) or in_lobby
+	mp_lobby_edit.editable = not in_lobby
+	mp_leave_button.disabled = not in_lobby
+	# When connected as the non-host, lock all rule-setting controls — only
+	# the host decides grid size, arrow rules, etc.
+	var client_locked: bool = multiplayer_enabled and not is_net_host
+	grid_size_option.disabled = client_locked
+	shift_limit_spin.editable = not client_locked
+	bonus_checkbox.disabled = client_locked
+	arrows_end_turn_checkbox.disabled = client_locked
+	if mnk_m_spin != null:
+		mnk_m_spin.editable = not client_locked
+		mnk_n_spin.editable = not client_locked
+		mnk_k_spin.editable = not client_locked
+	$VBox/ButtonRow/RestartButton.disabled = client_locked
+	$VBox/ButtonRow/ResetScoresButton.disabled = client_locked

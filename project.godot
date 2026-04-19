@@ -19,9 +19,12 @@ run/main_scene="res://Main.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
 config/icon="res://icon.svg"
 
+[autoload]
+
+Multiplayer="*res://Multiplayer.gd"
+
 [display]
 
-window/size/viewport_width=480
-window/size/viewport_height=800
-window/size/resizable=false
-window/stretch/scale=1.5
+window/size/viewport_width=760
+window/size/viewport_height=1040
+window/stretch/scale=1.3
