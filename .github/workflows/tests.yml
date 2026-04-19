@@ -1,0 +1,39 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    name: Run GDScript unit tests
+    runs-on: ubuntu-latest
+    env:
+      # Pin the Godot version so we get reproducible results. Bump together
+      # with the minimum version documented in README.md.
+      GODOT_VERSION: 4.2.2
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download Godot headless binary
+        run: |
+          set -euo pipefail
+          url="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          echo "Fetching ${url}"
+          curl -L -o godot.zip "${url}"
+          unzip -q godot.zip
+          mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" godot
+          chmod +x godot
+
+      - name: Import project (populates .godot cache)
+        # The first run builds the import cache; --quit exits as soon as it's
+        # done so the step finishes cleanly. We silence stderr chatter from
+        # optional features the headless binary doesn't carry (audio, etc.).
+        run: |
+          ./godot --headless --path tictactoe --import --quit || true
+
+      - name: Run unit tests
+        run: ./godot --headless --path tictactoe --script res://tests/run_tests.gd
