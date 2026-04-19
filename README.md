@@ -37,8 +37,21 @@ via the GodotSteam plugin (see `SETUP_STEAM.md`).
 - `project.godot` — Godot project config (registers the `Multiplayer` autoload)
 - `Main.tscn` — Main scene with all UI nodes
 - `Main.gd` — Game logic (win detection, score, turn management, network input gating)
+- `GameLogic.gd` — Pure static helpers (win-line generation, corner indices, winner detection). Lives here so the unit tests can exercise it without the scene tree.
 - `Cell.gd` — Individual board cell button behavior
 - `Multiplayer.gd` — Steam multiplayer autoload (host/join/send/receive). Gracefully reports "not installed" when the GodotSteam plugin isn't present.
 - `steam_appid.txt` — Contains `480`, the public Spacewar test App ID that lets Steam init work without publishing the game.
 - `SETUP_STEAM.md` — One-time setup steps for installing the GodotSteam plugin.
+- `tests/` — GDScript unit tests (`test_game_logic.gd`) and the headless runner (`run_tests.gd`).
 - `icon.svg` — App icon
+
+## Running Tests
+Unit tests cover the pure board math in `GameLogic.gd` — win-line generation for every grid mode, corner indices, and winner detection (row/column/diagonal/draw/in-progress plus the 4x4 square and diamond cases).
+
+To run them locally:
+
+```
+godot --headless --path . --script res://tests/run_tests.gd
+```
+
+The runner exits with status 0 on success and 1 on any failure. Every pull request is automatically checked by the GitHub Actions workflow at `.github/workflows/tests.yml` (one level up from this folder in the repo), which downloads the headless Godot binary and runs the same command.

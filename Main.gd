@@ -257,64 +257,7 @@ func _rebuild_board() -> void:
 		cells.append(b)
 
 	var include_square_diamond: bool = grid_mode == GridMode.FOUR
-	win_lines = _generate_win_lines(grid_cols, grid_rows, win_length, include_square_diamond)
-
-# Build the list of winning lines for a cols x rows board where a win is
-# `k` matching marks in a horizontal, vertical, or diagonal line. When
-# `include_square_diamond` is true (only used for the 4x4 preset), also
-# appends every 2x2 square and every 4-cell diamond (four matching marks
-# in the cells directly above, below, left, and right of any single
-# center cell — the center itself is not part of the line).
-func _generate_win_lines(cols: int, rows: int, k: int, include_square_diamond: bool) -> Array:
-	var lines: Array = []
-	if k < 1:
-		return lines
-
-	# Horizontal k-in-a-row
-	if cols >= k:
-		for r in range(rows):
-			for c in range(cols - k + 1):
-				var line: Array = []
-				for i in range(k):
-					line.append(r * cols + c + i)
-				lines.append(line)
-	# Vertical k-in-a-row
-	if rows >= k:
-		for r in range(rows - k + 1):
-			for c in range(cols):
-				var line: Array = []
-				for i in range(k):
-					line.append((r + i) * cols + c)
-				lines.append(line)
-	# Diagonal top-left to bottom-right (slope down-right)
-	if rows >= k and cols >= k:
-		for r in range(rows - k + 1):
-			for c in range(cols - k + 1):
-				var line: Array = []
-				for i in range(k):
-					line.append((r + i) * cols + (c + i))
-				lines.append(line)
-	# Diagonal top-right to bottom-left (slope down-left)
-	if rows >= k and cols >= k:
-		for r in range(rows - k + 1):
-			for c in range(k - 1, cols):
-				var line: Array = []
-				for i in range(k):
-					line.append((r + i) * cols + (c - i))
-				lines.append(line)
-
-	# 4x4-preset-only extras: 2x2 squares and diamonds.
-	if include_square_diamond and cols >= 2 and rows >= 2:
-		for r in range(rows - 1):
-			for c in range(cols - 1):
-				var tl := r * cols + c
-				lines.append([tl, tl + 1, tl + cols, tl + cols + 1])
-		for r in range(1, rows - 1):
-			for c in range(1, cols - 1):
-				var center := r * cols + c
-				lines.append([center - cols, center - 1, center + 1, center + cols])
-
-	return lines
+	win_lines = GameLogic.generate_win_lines(grid_cols, grid_rows, win_length, include_square_diamond)
 
 # ---------------------------------------------------------------------------
 # Play & shift
@@ -457,20 +400,7 @@ func _refresh_cells() -> void:
 			cells[i].set_mark(board[i])
 
 func _check_winner() -> int:
-	for line in win_lines:
-		var first: int = board[line[0]]
-		if first == 0:
-			continue
-		var all_match := true
-		for idx in line:
-			if board[idx] != first:
-				all_match = false
-				break
-		if all_match:
-			return first
-	if not 0 in board:
-		return -1
-	return 0
+	return GameLogic.check_winner(board, win_lines)
 
 func _highlight_winner(winner: int) -> void:
 	for line in win_lines:
@@ -660,11 +590,10 @@ func _refresh_mnk_row_visibility() -> void:
 # ---------------------------------------------------------------------------
 
 # Returns the four corner indices for the current board (top-left, top-right,
-# bottom-left, bottom-right).
+# bottom-left, bottom-right). Thin wrapper around GameLogic.corner_indices so
+# the instance-free computation can be unit tested without the scene tree.
 func _corner_indices() -> Array:
-	var cols := grid_cols
-	var rows := grid_rows
-	return [0, cols - 1, (rows - 1) * cols, rows * cols - 1]
+	return GameLogic.corner_indices(grid_cols, grid_rows)
 
 # Returns the set of board indices that should be armed with a ★ for the
 # given bonus mode. Called fresh each New Game — RANDOM re-rolls every cell
