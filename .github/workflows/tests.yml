@@ -1,10 +1,16 @@
 name: Tests
 
 on:
+  # The repo's default branch is `dev`, so PRs target `dev` and pushes land
+  # on `dev`. If you rename the default branch later (Settings → Branches),
+  # update the names below too.
   pull_request:
-    branches: [main]
+    branches: [dev]
   push:
-    branches: [main]
+    branches: [dev]
+  # Adds a "Run workflow" button in the Actions tab for manual debugging —
+  # handy for smoke-testing the workflow itself without opening a PR.
+  workflow_dispatch:
 
 jobs:
   unit-tests:
