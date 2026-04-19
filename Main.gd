@@ -14,7 +14,10 @@ extends Control
 # 0 = empty, 1 = X, 2 = O.
 const CellScript = preload("res://Cell.gd")
 
-enum GridMode { THREE = 3, FOUR = 4, MNK = -1 }
+# Use non-negative IDs so OptionButton.add_item(label, id) honors them.
+# add_item treats id == -1 as "auto-assign based on item index", which
+# silently breaks equality checks against get_selected_id().
+enum GridMode { THREE = 3, FOUR = 4, MNK = 5 }
 
 var grid_cols := 3   # M
 var grid_rows := 3   # N
@@ -41,11 +44,11 @@ var corner_bonuses_enabled := true
 # Maps corner index -> true/false. true means the bonus is still available.
 var corner_bonus_armed: Dictionary = {}
 
-# When true, pressing an arrow button also ends the current player's turn
-# (like placing a piece). When false (default), only piece placement ends a
-# turn; the current player can keep shifting until they run out of arrow
-# uses or decide to place.
-var arrows_end_turn := false
+# When true (default), pressing an arrow button also ends the current
+# player's turn (like placing a piece). When false, only piece placement
+# ends a turn; the current player can keep shifting until they run out of
+# arrow uses or decide to place.
+var arrows_end_turn := true
 
 var cells: Array = []
 var status_label: Label
