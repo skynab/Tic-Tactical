@@ -408,9 +408,13 @@ theme_override_font_sizes/font_size = 14
 [node name="BonusRow" type="HBoxContainer" parent="ConfigDialog/ConfigBox"]
 layout_mode = 2
 alignment = 1
+theme_override_constants/separation = 10
 
-[node name="BonusCheckBox" type="CheckBox" parent="ConfigDialog/ConfigBox/BonusRow"]
+[node name="BonusLabel" type="Label" parent="ConfigDialog/ConfigBox/BonusRow"]
 layout_mode = 2
-button_pressed = true
-text = "Corner bonus  (+1 arrow on ★ squares)"
+text = "Arrow Bonus (+1 arrow on ★ squares):"
 theme_override_font_sizes/font_size = 14
+
+[node name="BonusOption" type="OptionButton" parent="ConfigDialog/ConfigBox/BonusRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(130, 0)

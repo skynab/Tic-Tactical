@@ -27,3 +27,4 @@ Multiplayer="*res://Multiplayer.gd"
 
 window/size/viewport_width=760
 window/size/viewport_height=1040
+window/stretch/scale=1.4

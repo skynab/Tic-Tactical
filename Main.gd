@@ -19,6 +19,13 @@ const CellScript = preload("res://Cell.gd")
 # silently breaks equality checks against get_selected_id().
 enum GridMode { THREE = 3, FOUR = 4, MNK = 5 }
 
+# "Arrow Bonus" mode — controls where (if anywhere) ★ bonus markers spawn
+# at the start of each new game. OFF disables the feature entirely;
+# CORNERS places a ★ on each of the four corner cells (the classic
+# behavior); RANDOM gives every cell an independent 25% chance of being
+# armed. Future modes (Center, Edges, …) slot in here.
+enum BonusMode { OFF = 0, CORNERS = 1, RANDOM = 2 }
+
 var grid_cols := 3   # M
 var grid_rows := 3   # N
 var win_length := 3  # K
@@ -36,13 +43,21 @@ var shifts_left := {1: 3, 2: 3}
 # Computed whenever the board dimensions or win length change.
 var win_lines: Array = []
 
-# "Corner bonus" feature: when enabled, a new game arms the four corner
-# cells with a yellow ★ icon. The first time a player places a piece on
-# one of those corners, they gain +1 to their arrow-use budget, and the
-# bonus is consumed (icon disappears).
-var corner_bonuses_enabled := true
-# Maps corner index -> true/false. true means the bonus is still available.
-var corner_bonus_armed: Dictionary = {}
+# "Arrow Bonus" feature: when enabled, a new game arms selected cells with
+# a yellow ★ icon. The first time a player places a piece on one of those
+# cells, they gain +1 to their arrow-use budget, and the bonus is consumed
+# (icon disappears). `bonus_mode` picks which cells get armed (see the
+# BonusMode enum above). Default is CORNERS (the classic behavior).
+var bonus_mode: int = BonusMode.CORNERS
+# Maps armed cell index -> true/false. true means the bonus is still available.
+var bonus_armed: Dictionary = {}
+# When non-null, the next _on_restart_pressed will use these indices to arm
+# the ★ bonuses instead of computing them locally. This is how the Random
+# bonus mode stays in sync over Steam multiplayer: the host rolls the dice
+# once, broadcasts the chosen indices, and the client applies them verbatim.
+# Always cleared back to null after use so the next local New Game rolls
+# fresh values.
+var _remote_bonus_indices: Variant = null
 
 # When true (default), pressing an arrow button also ends the current
 # player's turn (like placing a piece). When false, only piece placement
@@ -64,7 +79,7 @@ var shift_left_button: Button
 var shift_right_button: Button
 var grid_size_option: OptionButton
 var grid_container: GridContainer
-var bonus_checkbox: CheckBox
+var bonus_option: OptionButton
 var arrows_end_turn_checkbox: CheckBox
 var mnk_row: HBoxContainer
 var mnk_m_spin: SpinBox
@@ -148,8 +163,12 @@ func _ready() -> void:
 	mnk_k_spin = $ConfigDialog/ConfigBox/MNKRow/KSpin
 	_refresh_mnk_row_visibility()
 
-	bonus_checkbox = $ConfigDialog/ConfigBox/BonusRow/BonusCheckBox
-	bonus_checkbox.button_pressed = corner_bonuses_enabled
+	bonus_option = $ConfigDialog/ConfigBox/BonusRow/BonusOption
+	bonus_option.clear()
+	bonus_option.add_item("Off", BonusMode.OFF)
+	bonus_option.add_item("Corners", BonusMode.CORNERS)
+	bonus_option.add_item("Random", BonusMode.RANDOM)
+	bonus_option.select(bonus_option.get_item_index(bonus_mode))
 
 	arrows_end_turn_checkbox = $ConfigDialog/ConfigBox/ArrowsEndTurnRow/ArrowsEndTurnCheckBox
 	arrows_end_turn_checkbox.button_pressed = arrows_end_turn
@@ -183,7 +202,7 @@ func _ready() -> void:
 			mp_join_button.disabled = true
 
 	_rebuild_board()
-	_init_corner_bonuses()
+	_init_bonuses(_bonus_indices(bonus_mode))
 	_refresh_bonus_icons()
 	_update_shift_ui()
 	_refresh_turn_indicator()
@@ -313,12 +332,12 @@ func _on_cell_pressed(index: int) -> void:
 		Multiplayer.send({"t": "click", "i": index})
 	board[index] = current_player
 	cells[index].set_mark(current_player)
-	# If this corner was armed with a bonus, grant the current player +1
+	# If this cell was armed with a bonus ★, grant the current player +1
 	# arrow use and consume the bonus. Note: the bonus only triggers on
-	# direct placement (cell click), not when a piece is shifted onto a
-	# corner, because shifts don't call _on_cell_pressed.
-	if corner_bonus_armed.get(index, false):
-		corner_bonus_armed[index] = false
+	# direct placement (cell click), not when a piece is shifted onto an
+	# armed cell, because shifts don't call _on_cell_pressed.
+	if bonus_armed.get(index, false):
+		bonus_armed[index] = false
 		shifts_left[current_player] = shifts_left.get(current_player, 0) + 1
 	_refresh_bonus_icons()
 	_check_and_resolve()
@@ -488,22 +507,15 @@ func _on_reset_scores_pressed() -> void:
 	_on_restart_pressed()
 
 func _on_restart_pressed() -> void:
-	# In a network game, only the host may start a new game. The host
-	# broadcasts the settings so the client mirrors them exactly.
-	if multiplayer_enabled and not applying_remote:
-		if not is_net_host:
-			return
-		Multiplayer.send({
-			"t": "new_game",
-			"grid_mode": int(grid_size_option.get_selected_id()),
-			"mnk_m": int(mnk_m_spin.value),
-			"mnk_n": int(mnk_n_spin.value),
-			"mnk_k": int(mnk_k_spin.value),
-			"max_shifts": int(shift_limit_spin.value),
-			"corner_bonus": bonus_checkbox.button_pressed,
-			"arrows_end_turn": arrows_end_turn_checkbox.button_pressed,
-		})
-	# Apply pending settings for the new game.
+	# In a network game, only the host may start a new game. Clients reach
+	# this function only via _on_mp_message (applying_remote=true), which
+	# means we should skip the broadcast branch and apply settings locally.
+	if multiplayer_enabled and not applying_remote and not is_net_host:
+		return
+
+	# Compute pending settings for the new game. Grid dimensions have to be
+	# resolved BEFORE we compute bonus indices, because RANDOM mode rolls
+	# against the new cell count, not the previous board's.
 	var selected_mode := int(grid_size_option.get_selected_id())
 	var new_cols: int
 	var new_rows: int
@@ -545,10 +557,34 @@ func _on_restart_pressed() -> void:
 		max_shifts = int(shift_limit_spin.value)
 	shifts_left = {1: max_shifts, 2: max_shifts}
 
-	# Re-arm corner bonuses from the checkbox state.
-	if bonus_checkbox != null:
-		corner_bonuses_enabled = bonus_checkbox.button_pressed
-	_init_corner_bonuses()
+	# Resolve the bonus-mode selection and roll (or inherit) the ★ indices.
+	# When we're applying an inbound "new_game" message, _remote_bonus_indices
+	# is set to the host's rolled indices and we use those verbatim — this is
+	# what keeps RANDOM in sync across host/client.
+	if bonus_option != null:
+		bonus_mode = int(bonus_option.get_selected_id())
+	var new_bonus_indices: Array
+	if applying_remote and _remote_bonus_indices != null:
+		new_bonus_indices = _remote_bonus_indices
+	else:
+		new_bonus_indices = _bonus_indices(bonus_mode)
+
+	# Host-side broadcast. Runs AFTER the new dims + bonus indices have been
+	# computed so we can include the exact indices the client should arm.
+	if multiplayer_enabled and not applying_remote:
+		Multiplayer.send({
+			"t": "new_game",
+			"grid_mode": int(grid_size_option.get_selected_id()),
+			"mnk_m": int(mnk_m_spin.value),
+			"mnk_n": int(mnk_n_spin.value),
+			"mnk_k": int(mnk_k_spin.value),
+			"max_shifts": int(shift_limit_spin.value),
+			"bonus_mode": int(bonus_option.get_selected_id()),
+			"bonus_indices": new_bonus_indices,
+			"arrows_end_turn": arrows_end_turn_checkbox.button_pressed,
+		})
+
+	_init_bonuses(new_bonus_indices)
 	_refresh_bonus_icons()
 
 	# Apply the "arrows end turn" rule for the new game.
@@ -594,8 +630,10 @@ func _sync_ui_to_applied_state() -> void:
 		shift_limit_spin.value = float(max_shifts)
 	if arrows_end_turn_checkbox != null:
 		arrows_end_turn_checkbox.button_pressed = arrows_end_turn
-	if bonus_checkbox != null:
-		bonus_checkbox.button_pressed = corner_bonuses_enabled
+	if bonus_option != null:
+		var bidx := bonus_option.get_item_index(bonus_mode)
+		if bidx >= 0:
+			bonus_option.select(bidx)
 	_refresh_mnk_row_visibility()
 
 func _on_grid_size_selected(_index: int) -> void:
@@ -618,7 +656,7 @@ func _refresh_mnk_row_visibility() -> void:
 		mnk_k_spin.editable = mnk_active
 
 # ---------------------------------------------------------------------------
-# Corner-bonus helpers
+# Arrow-bonus helpers
 # ---------------------------------------------------------------------------
 
 # Returns the four corner indices for the current board (top-left, top-right,
@@ -628,21 +666,41 @@ func _corner_indices() -> Array:
 	var rows := grid_rows
 	return [0, cols - 1, (rows - 1) * cols, rows * cols - 1]
 
-# Arm all four corner cells with a bonus (if the feature is enabled).
-func _init_corner_bonuses() -> void:
-	corner_bonus_armed.clear()
-	if not corner_bonuses_enabled:
-		return
-	for idx in _corner_indices():
-		corner_bonus_armed[idx] = true
+# Returns the set of board indices that should be armed with a ★ for the
+# given bonus mode. Called fresh each New Game — RANDOM re-rolls every cell
+# at a 25% chance, so each game gets a different pattern. Add future modes
+# by extending this match.
+func _bonus_indices(mode: int) -> Array:
+	match mode:
+		BonusMode.CORNERS:
+			return _corner_indices()
+		BonusMode.RANDOM:
+			var indices: Array = []
+			var total := grid_cols * grid_rows
+			for i in range(total):
+				if randf() < 0.25:
+					indices.append(i)
+			return indices
+		_:
+			return []
+
+# Arm the given cell indices with ★ bonuses. Called on New Game, after the
+# board has been rebuilt for the current dimensions. The caller (usually
+# `_on_restart_pressed`) computes the index list once (via `_bonus_indices`
+# for local games, or from the inbound multiplayer message on the client)
+# and passes it in here — that way RANDOM mode is only rolled once per new
+# game, not both by the host and the client.
+func _init_bonuses(indices: Array) -> void:
+	bonus_armed.clear()
+	for idx in indices:
+		bonus_armed[int(idx)] = true
 
 # Update the yellow ★ icon on every cell. A cell shows its bonus icon
-# only when the corresponding corner is still armed AND the cell is empty.
-# This way, shifts that move pieces onto/off corners are reflected
-# immediately.
+# only when it's still armed AND empty — so shifts that move pieces onto
+# or off a ★ cell are reflected immediately.
 func _refresh_bonus_icons() -> void:
 	for i in range(cells.size()):
-		var visible_bonus: bool = corner_bonus_armed.get(i, false) and board[i] == 0
+		var visible_bonus: bool = bonus_armed.get(i, false) and board[i] == 0
 		cells[i].set_bonus(visible_bonus)
 
 # ---------------------------------------------------------------------------
@@ -806,13 +864,37 @@ func _on_mp_message(data: Variant) -> void:
 				mnk_n_spin.value = float(int(data.get("mnk_n", int(mnk_n_spin.value))))
 				mnk_k_spin.value = float(int(data.get("mnk_k", int(mnk_k_spin.value))))
 				shift_limit_spin.value = float(int(data.get("max_shifts", max_shifts)))
-				bonus_checkbox.button_pressed = bool(data.get("corner_bonus", corner_bonuses_enabled))
+				var bm := int(data.get("bonus_mode", bonus_mode))
+				var bidx := bonus_option.get_item_index(bm)
+				if bidx >= 0:
+					bonus_option.select(bidx)
 				arrows_end_turn_checkbox.button_pressed = bool(data.get("arrows_end_turn", arrows_end_turn))
 				arrows_end_turn = arrows_end_turn_checkbox.button_pressed
 				_refresh_mnk_row_visibility()
+			# Copy the host's rolled ★ indices so _on_restart_pressed uses
+			# them verbatim instead of rolling new ones on our end. Without
+			# this the RANDOM mode would produce different patterns on each
+			# machine.
+			var raw_indices: Variant = data.get("bonus_indices", null)
+			if raw_indices is Array:
+				var copied: Array = []
+				for v in raw_indices:
+					copied.append(int(v))
+				_remote_bonus_indices = copied
+			else:
+				_remote_bonus_indices = null
 			_on_restart_pressed()
+			_remote_bonus_indices = null
 		"reset_scores":
-			_on_reset_scores_pressed()
+			# Only zero the scores here — don't trigger a full New Game.
+			# The host is about to (or just did) send a separate "new_game"
+			# message with the freshly-rolled bonus indices, and we need to
+			# wait for that so the client applies the host's pattern rather
+			# than rolling its own.
+			scores = {1: 0, 2: 0, "draw": 0}
+			score_x.text = "0"
+			score_o.text = "0"
+			score_draw.text = "0"
 	applying_remote = false
 
 # Update enabled/disabled state for every multiplayer-affected control.
@@ -830,7 +912,7 @@ func _update_mp_ui() -> void:
 	var client_locked: bool = multiplayer_enabled and not is_net_host
 	grid_size_option.disabled = client_locked
 	shift_limit_spin.editable = not client_locked
-	bonus_checkbox.disabled = client_locked
+	bonus_option.disabled = client_locked
 	arrows_end_turn_checkbox.disabled = client_locked
 	if mnk_m_spin != null:
 		mnk_m_spin.editable = not client_locked
