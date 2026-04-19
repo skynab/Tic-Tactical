@@ -33,7 +33,7 @@ jobs:
         # done so the step finishes cleanly. We silence stderr chatter from
         # optional features the headless binary doesn't carry (audio, etc.).
         run: |
-          ./godot --headless --path tictactoe --import --quit || true
+          ./godot --headless --path . --import --quit || true
 
       - name: Run unit tests
-        run: ./godot --headless --path tictactoe --script res://tests/run_tests.gd
+        run: ./godot --headless --path . --script res://tests/run_tests.gd
