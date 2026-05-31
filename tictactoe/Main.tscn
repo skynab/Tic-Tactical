@@ -228,7 +228,7 @@ custom_minimum_size = Vector2(0, 12)
 [node name="MPLabel" type="Label" parent="VBox"]
 layout_mode = 2
 size_flags_horizontal = 4
-text = "Multiplayer (Steam)"
+text = "Multiplayer (WebSocket relay)"
 horizontal_alignment = 1
 theme_override_font_sizes/font_size = 14
 theme_override_colors/font_color = Color(0.75, 0.75, 0.85, 1)
@@ -248,7 +248,7 @@ theme_override_font_sizes/font_size = 14
 [node name="LobbyIdEdit" type="LineEdit" parent="VBox/MPRow"]
 layout_mode = 2
 custom_minimum_size = Vector2(220, 32)
-placeholder_text = "Lobby ID"
+placeholder_text = "Room code"
 
 [node name="JoinButton" type="Button" parent="VBox/MPRow"]
 layout_mode = 2

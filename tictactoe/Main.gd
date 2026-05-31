@@ -53,7 +53,7 @@ var bonus_mode: int = BonusMode.CORNERS
 var bonus_armed: Dictionary = {}
 # When non-null, the next _on_restart_pressed will use these indices to arm
 # the ★ bonuses instead of computing them locally. This is how the Random
-# bonus mode stays in sync over Steam multiplayer: the host rolls the dice
+# bonus mode stays in sync over networked play: the host rolls the dice
 # once, broadcasts the chosen indices, and the client applies them verbatim.
 # Always cleared back to null after use so the next local New Game rolls
 # fresh values.
@@ -94,7 +94,7 @@ var turn_o_label: Label
 # and starts a fresh game via _on_restart_pressed.
 var config_dialog: ConfirmationDialog
 
-# ---- Multiplayer (Steam) ----
+# ---- Multiplayer (WebSocket relay) ----
 # When `multiplayer_enabled` is true, input is gated by whose turn it is,
 # and every user action is broadcast to the opponent via the Multiplayer
 # autoload. `my_side` is the side this instance controls (1 = X, 2 = O).
@@ -197,7 +197,7 @@ func _ready() -> void:
 		Multiplayer.disconnected_from_lobby.connect(_on_mp_disconnected)
 		Multiplayer.error_reported.connect(_on_mp_error)
 		if not Multiplayer.is_plugin_available():
-			mp_status_label.text = "GodotSteam plugin not installed — see SETUP_STEAM.md"
+			mp_status_label.text = "Relay URL not configured — edit RELAY_URL in Multiplayer.gd"
 			mp_host_button.disabled = true
 			mp_join_button.disabled = true
 
@@ -711,22 +711,22 @@ func _update_shift_ui() -> void:
 # ---------------------------------------------------------------------------
 
 func _on_host_pressed() -> void:
-	mp_status_label.text = "Connecting to Steam..."
+	mp_status_label.text = "Connecting to relay..."
 	Multiplayer.host()
 
 func _on_join_pressed() -> void:
 	var id_str := mp_lobby_edit.text.strip_edges()
 	if id_str == "":
-		mp_status_label.text = "Paste a lobby ID first."
+		mp_status_label.text = "Paste a room code first."
 		return
-	mp_status_label.text = "Joining lobby..."
+	mp_status_label.text = "Joining room..."
 	Multiplayer.join(id_str)
 
 func _on_copy_pressed() -> void:
 	if mp_lobby_edit.text == "":
 		return
 	DisplayServer.clipboard_set(mp_lobby_edit.text)
-	mp_status_label.text = "Lobby ID copied to clipboard."
+	mp_status_label.text = "Room code copied to clipboard."
 
 func _on_leave_pressed() -> void:
 	Multiplayer.leave()
@@ -734,7 +734,7 @@ func _on_leave_pressed() -> void:
 
 func _on_mp_hosting_started(lobby_id_str: String) -> void:
 	mp_lobby_edit.text = lobby_id_str
-	mp_status_label.text = "Hosting — share this Lobby ID, then wait for opponent."
+	mp_status_label.text = "Hosting — share this room code, then wait for opponent."
 	mp_leave_button.disabled = false
 
 func _on_mp_opponent_joined() -> void:

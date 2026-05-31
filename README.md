@@ -1,17 +1,19 @@
 # Tic Tac Toe — Godot 4 Project
 
 A complete two-player Tic Tac Toe game built with Godot 4. Supports local
-hot-seat play out of the box, plus optional **Steam-based online multiplayer**
-via the GodotSteam plugin (see `tictactoe/SETUP_STEAM.md`).
+hot-seat play out of the box, plus optional **online multiplayer** over
+WebSockets via a tiny relay server (see `relay_server/README.md`).
 
 The Godot project itself lives in the `tictactoe/` subfolder — everything
 in this README that talks about scene files, scripts, or Godot paths
-refers to files inside that folder.
+refers to files inside that folder. The `relay_server/` folder is a
+separate ~150-line Node.js service used only for online play.
 
 ## Requirements
-- **Godot 4.2+** (download free at https://godotengine.org)
-- *(Optional, for online play)* GodotSteam GDExtension + Steam client — see
-  `tictactoe/SETUP_STEAM.md`.
+- **Godot 4.6+** (download free at https://godotengine.org)
+- *(Optional, for online play)* a deployed copy of `relay_server/` —
+  details in `relay_server/README.md`. For local two-window testing,
+  Node.js 18+ is enough.
 
 ## How to Open
 1. Download and install Godot 4
@@ -30,7 +32,7 @@ refers to files inside that folder.
 - Directional shift arrows (▲ ▼ ◀ ▶) that slide every piece one cell in that direction; pieces sliding off the edge are removed
 - **Per-player arrow-use limit** *(in the New Game dialog)*: a SpinBox lets you set how many times each player can click an arrow per game (default **3**). Remaining counts for each player are shown above the board. When a player runs out, the arrows disable on their turn.
 - **Arrows end turn toggle** *(in the New Game dialog)*: a CheckBox (**on by default**). When enabled (default), pressing an arrow also ends the current player's turn — just like placing a piece. When disabled, a player can keep pressing arrows until they run out of uses or place a piece.
-- **Online multiplayer (Steam)**: with the GodotSteam plugin installed, one player clicks **Host** to create a Steam lobby and receives a Lobby ID; the other pastes the ID and clicks **Join**. Host is X, joiner is O, and the turn indicator adds a **"(You)"** marker next to your side so it's clear who's who. The host is authoritative — only the host can open the New Game dialog, change rules, or Reset Scores; the client's controls for those are locked while connected. Every click, arrow press, New Game, and Reset Scores is synced over Steam's lobby chat channel. The game still runs fine without the plugin — the Host/Join buttons just display a "plugin not installed" notice. See `SETUP_STEAM.md` for the one-time plugin install steps.
+- **Online multiplayer (WebSocket relay)**: one player clicks **Host** to open a room on the relay and receives a short alphanumeric **room code**; the other pastes the code and clicks **Join**. Host is X, joiner is O, and the turn indicator adds a **"(You)"** marker next to your side so it's clear who's who. The host is authoritative — only the host can open the New Game dialog, change rules, or Reset Scores; the client's controls for those are locked while connected. Every click, arrow press, New Game, and Reset Scores is forwarded through the relay verbatim. The game still runs fine offline; if `RELAY_URL` in `Multiplayer.gd` is still pointing at the placeholder, the Host/Join buttons display a "Relay URL not configured" notice. Deployment instructions for the relay (Fly.io / Railway / Render free tiers) are in `relay_server/README.md`.
 - **Selectable grid size** *(in the New Game dialog)*: an OptionButton lets you choose between **3x3**, **4x4**, and **MNK (custom)**.
   - 3x3 wins: rows, columns, and the two main diagonals (classic).
   - 4x4 wins: rows (4-in-a-row), columns, the two main diagonals, **any 2x2 square** of four matching marks, and **diamonds** — four matching marks in the cells directly above, below, left, and right of any single center cell. (The center cell itself is not part of the diamond — only the four surrounding cells must match.)
@@ -38,16 +40,21 @@ refers to files inside that folder.
 - **Arrow Bonus** *(in the New Game dialog)*: a dropdown labeled **"Arrow Bonus (+1 arrow on ★ squares)"** with options **Off**, **Corners**, and **Random** (default: **Corners**). In **Corners** mode, each new game spawns a small yellow ★ icon on the four corner squares of the board. In **Random** mode, every cell on the board independently has a **25% chance** of being armed with a ★ at the start of each new game (so each game gets a different pattern, which is rolled once by the host and synced to the client in online play). In either mode, the first time a player *places* (clicks) on a ★ cell, they gain **+1 arrow use** and the bonus is consumed. The bonus is only triggered by direct placement, not by pieces shifting onto an armed cell. Choose **Off** to disable ★s entirely. The dropdown is designed to take more patterns (center, edges, etc.) as they're added.
 
 ## Project Files
+
+Inside `tictactoe/`:
+
 - `project.godot` — Godot project config (registers the `Multiplayer` autoload)
 - `Main.tscn` — Main scene with all UI nodes
 - `Main.gd` — Game logic (win detection, score, turn management, network input gating)
 - `GameLogic.gd` — Pure static helpers (win-line generation, corner indices, winner detection). Lives here so the unit tests can exercise it without the scene tree.
 - `Cell.gd` — Individual board cell button behavior
-- `Multiplayer.gd` — Steam multiplayer autoload (host/join/send/receive). Gracefully reports "not installed" when the GodotSteam plugin isn't present.
-- `steam_appid.txt` — Contains `480`, the public Spacewar test App ID that lets Steam init work without publishing the game.
-- `SETUP_STEAM.md` — One-time setup steps for installing the GodotSteam plugin.
+- `Multiplayer.gd` — WebSocket-relay multiplayer autoload (host/join/send/receive). Edit `RELAY_URL` at the top to point at your deployed relay.
 - `tests/` — GDScript unit tests (`test_game_logic.gd`) and the headless runner (`run_tests.gd`).
 - `icon.svg` — App icon
+
+At the repo root:
+
+- `relay_server/` — tiny Node.js WebSocket relay used for online play. See its own README for local-run and deployment instructions.
 
 ## Running Tests
 Unit tests cover the pure board math in `GameLogic.gd` — win-line generation for every grid mode, corner indices, and winner detection (row/column/diagonal/draw/in-progress plus the 4x4 square and diamond cases).
