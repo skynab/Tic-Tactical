@@ -8,10 +8,6 @@
 
 config_version=5
 
-[animation]
-
-compatibility/default_parent_skeleton_in_mesh_instance_3d=true
-
 [application]
 
 config/name="Tic Tac Toe"
@@ -27,3 +23,4 @@ Multiplayer="*res://Multiplayer.gd"
 
 window/size/viewport_width=760
 window/size/viewport_height=1040
+window/stretch/scale=1.2

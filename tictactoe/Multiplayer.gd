@@ -1,19 +1,22 @@
 extends Node
 
-# Multiplayer (Steam) singleton.
+# Multiplayer (WebSocket relay) singleton.
 #
-# Wraps the GodotSteam plugin (https://github.com/GodotSteam/GodotSteam) to
-# provide a simple host/join lobby flow and a reliable message channel for
-# the Tic Tac Toe game. The plugin is OPTIONAL: if it isn't installed the
-# game still runs fine in local-only mode; this node just reports that
-# multiplayer is unavailable.
+# Connects to a small relay server (see /relay_server) using Godot's built-in
+# WebSocketPeer. The relay pairs two clients into a "room" identified by a
+# short alphanumeric code; once paired, every message either side sends is
+# forwarded verbatim to the other.
 #
-# Communication uses Steam lobbies and Steam's lobby chat messages as a
-# reliable string transport. Game messages are JSON-encoded dictionaries.
+# Why a relay (and not e.g. ENet)? Two players on residential internet
+# connections almost always sit behind NAT, which makes raw UDP painful.
+# WebSockets ride on top of HTTPS, so any free hosting tier (Fly.io,
+# Railway, Render) handles TLS, NAT, and reverse proxying for us. The
+# total infrastructure footprint is one tiny Node.js process that does
+# nothing but echo dictionaries between two sockets.
 #
-# All Steam API calls go through dynamic dispatch (via
-# Engine.get_singleton("Steam")) so that this file still parses and runs
-# even when the plugin binaries aren't present.
+# This module preserves the public interface of the previous Steam-based
+# Multiplayer autoload — same signal names, same method signatures — so
+# Main.gd can stay unchanged.
 
 signal hosting_started(lobby_id_str: String)
 signal opponent_joined
@@ -22,222 +25,198 @@ signal disconnected_from_lobby(reason: String)
 signal message_received(data: Variant)
 signal error_reported(msg: String)
 
-enum ConnState { IDLE, HOSTING_WAITING, IN_LOBBY_HOST, CONNECTING, IN_LOBBY_CLIENT }
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 
-# Steam constants (copied from the Steamworks SDK so we don't depend on
-# the plugin being present at parse time).
-const LOBBY_TYPE_FRIENDS_ONLY := 1
-const LOBBY_TYPE_PUBLIC := 2
-const LOBBY_ENTER_SUCCESS := 1
-const CHAT_MEMBER_STATE_ENTERED := 0x0001
-const CHAT_MEMBER_STATE_LEFT := 0x0002
-const CHAT_MEMBER_STATE_DISCONNECTED := 0x0004
-const CHAT_MEMBER_STATE_KICKED := 0x0008
-const CHAT_MEMBER_STATE_BANNED := 0x0010
+# URL of your deployed relay server. Use wss:// (TLS) for any host that
+# terminates HTTPS for you (Fly.io, Render, Railway, etc.). Use ws:// for
+# local testing against `node server.js` on your own machine.
+#
+# The placeholder host below makes is_relay_configured() return false, which
+# disables the Host/Join buttons until you point this at a real server.
+const RELAY_URL := "wss://your-relay.example.com"
+
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
+
+enum ConnState { IDLE, CONNECTING, IN_ROOM_HOST, IN_ROOM_CLIENT }
 
 var state: int = ConnState.IDLE
-var lobby_id: int = 0
-var my_steam_id: int = 0
-var opponent_id: int = 0
+var room_code: String = ""
 var is_host: bool = false
 
-var _steam: Object = null
-var _initialized: bool = false
-var _signals_wired: bool = false
+var _ws: WebSocketPeer = null
+var _socket_open: bool = false
+# What we want to do once the socket finishes opening: either "create" (host
+# a room) or {"join": "<code>"} (join an existing room). Cleared after sent.
+var _pending_action: Dictionary = {}
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 func _ready() -> void:
+	# We only run _process while a socket is actually open. Idle is free.
 	set_process(false)
 
+# Returns true once the relay URL has been pointed at a real server.
+# Main.gd uses this to gate the Host/Join buttons and surface a helpful
+# message when it's still pointing at the placeholder.
 func is_plugin_available() -> bool:
-	return Engine.has_singleton("Steam")
+	return is_relay_configured()
+
+func is_relay_configured() -> bool:
+	# Crude but effective: any host containing "example.com" is the placeholder.
+	return RELAY_URL != "" and not RELAY_URL.contains("example.com")
 
 func is_connected_in_lobby() -> bool:
-	return state == ConnState.IN_LOBBY_HOST or state == ConnState.IN_LOBBY_CLIENT
+	return state == ConnState.IN_ROOM_HOST or state == ConnState.IN_ROOM_CLIENT
 
-# Lazily fetch the Steam singleton if the plugin is installed.
-func _get_steam() -> Object:
-	if _steam != null:
-		return _steam
-	if not Engine.has_singleton("Steam"):
-		return null
-	_steam = Engine.get_singleton("Steam")
-	return _steam
-
-# Initialize the Steam client. Safe to call repeatedly — it's a no-op
-# after the first successful init. Returns "" on success or an error string
-# describing what went wrong.
-func initialize() -> String:
-	if _initialized:
-		return ""
-	var s: Object = _get_steam()
-	if s == null:
-		return "GodotSteam plugin is not installed. See SETUP_STEAM.md."
-	# The init method name has varied between GodotSteam versions. Try the
-	# newer one first, then fall back.
-	var result: Variant = null
-	if s.has_method("steamInitEx"):
-		result = s.steamInitEx(false, 480)
-	elif s.has_method("steamInit"):
-		result = s.steamInit()
-	else:
-		return "Unsupported GodotSteam version: no steamInit method."
-	var ok := _init_result_ok(result)
-	if not ok.success:
-		return "Steam init failed: " + ok.message
-	_initialized = true
-	if s.has_method("getSteamID"):
-		my_steam_id = int(s.getSteamID())
-	_wire_signals(s)
-	set_process(true)
-	return ""
-
-# Normalize the various return shapes of steamInit[Ex] across versions.
-func _init_result_ok(result: Variant) -> Dictionary:
-	if typeof(result) == TYPE_DICTIONARY:
-		var status := int(result.get("status", 1))
-		var verbal := str(result.get("verbal", ""))
-		return {"success": status == 0, "message": verbal}
-	if typeof(result) == TYPE_INT:
-		return {"success": int(result) == 0, "message": "code %d" % int(result)}
-	if typeof(result) == TYPE_BOOL:
-		return {"success": bool(result), "message": ""}
-	# If the method didn't return anything explicit, assume it worked —
-	# Steam will error out later via signals if it actually failed.
-	return {"success": true, "message": ""}
-
-func _wire_signals(s: Object) -> void:
-	if _signals_wired:
-		return
-	s.connect("lobby_created", _on_lobby_created)
-	s.connect("lobby_joined", _on_lobby_joined)
-	s.connect("lobby_chat_update", _on_lobby_chat_update)
-	s.connect("lobby_message", _on_lobby_message)
-	_signals_wired = true
-
-func _process(_delta: float) -> void:
-	var s: Object = _get_steam()
-	if s == null:
-		return
-	# Pump Steam callbacks every frame. Some plugin builds pump
-	# automatically, others don't — calling it twice is harmless.
-	if s.has_method("run_callbacks"):
-		s.run_callbacks()
-	elif s.has_method("runCallbacks"):
-		s.runCallbacks()
-
-# Create a friends-only lobby and wait for a second player. Emits
-# `hosting_started(lobby_id_str)` when the lobby is ready.
+# Open a new room on the relay. Emits hosting_started(code) once the relay
+# replies with the assigned room code, then opponent_joined() when a second
+# client connects.
 func host() -> void:
-	var err := initialize()
-	if err != "":
-		error_reported.emit(err)
+	if not is_relay_configured():
+		error_reported.emit("Relay URL not configured. Edit RELAY_URL in Multiplayer.gd.")
 		return
-	var s: Object = _get_steam()
-	s.createLobby(LOBBY_TYPE_FRIENDS_ONLY, 2)
-	state = ConnState.HOSTING_WAITING
+	if _ws != null:
+		error_reported.emit("Already connected.")
+		return
+	_pending_action = {"type": "create"}
+	_open_socket()
 
-# Join an existing lobby by its numeric Steam lobby ID (as a string).
-func join(lobby_id_str: String) -> void:
-	var err := initialize()
-	if err != "":
-		error_reported.emit(err)
+# Join an existing room by its code (case-insensitive). Emits join_succeeded()
+# when the relay accepts the join.
+func join(code_str: String) -> void:
+	if not is_relay_configured():
+		error_reported.emit("Relay URL not configured. Edit RELAY_URL in Multiplayer.gd.")
 		return
-	var cleaned := lobby_id_str.strip_edges()
+	if _ws != null:
+		error_reported.emit("Already connected.")
+		return
+	var cleaned := code_str.strip_edges().to_upper()
 	if cleaned == "":
-		error_reported.emit("Paste a lobby ID first.")
+		error_reported.emit("Paste a room code first.")
 		return
-	if not cleaned.is_valid_int():
-		error_reported.emit("Lobby ID must be numeric.")
-		return
-	var parsed := cleaned.to_int()
-	if parsed == 0:
-		error_reported.emit("Invalid lobby ID.")
-		return
-	var s: Object = _get_steam()
-	s.joinLobby(parsed)
-	state = ConnState.CONNECTING
+	_pending_action = {"type": "join", "code": cleaned}
+	_open_socket()
 
-# Leave the current lobby, if any.
+# Disconnect from the relay (and the opponent, if any). Safe to call when
+# already disconnected.
 func leave() -> void:
-	var s: Object = _get_steam()
-	if s != null and lobby_id != 0 and s.has_method("leaveLobby"):
-		s.leaveLobby(lobby_id)
-	var was_connected := is_connected_in_lobby() or state == ConnState.HOSTING_WAITING
-	lobby_id = 0
-	opponent_id = 0
-	is_host = false
-	state = ConnState.IDLE
-	if was_connected:
-		disconnected_from_lobby.emit("Left lobby")
+	if _ws == null:
+		_reset_state()
+		return
+	# Polite "I'm leaving" so the other side gets a clean disconnect message
+	# instead of waiting for the socket close to register.
+	if is_connected_in_lobby():
+		_send_envelope({"type": "leave"})
+	_ws.close()
+	# Don't tear state down here — let _process see STATE_CLOSED and emit
+	# disconnected_from_lobby once, so we go through a single code path.
 
-# Send a JSON-serializable dictionary to the other player. No-op if not
-# currently in a lobby.
+# Send a JSON-serializable game message (e.g. {"t": "click", "i": 4}) to the
+# opponent. No-op when not in a room.
 func send(data: Variant) -> void:
 	if not is_connected_in_lobby():
 		return
-	var s: Object = _get_steam()
-	if s == null:
-		return
-	var payload := JSON.stringify(data)
-	s.sendLobbyChatMsg(lobby_id, payload)
+	_send_envelope({"type": "msg", "data": data})
 
 # ---------------------------------------------------------------------------
-# Steam signal callbacks
+# Internals
 # ---------------------------------------------------------------------------
 
-func _on_lobby_created(connect_result: Variant, new_lobby_id: Variant) -> void:
-	if int(connect_result) != 1:
-		error_reported.emit("Failed to create Steam lobby (code %s)." % str(connect_result))
-		state = ConnState.IDLE
+func _open_socket() -> void:
+	_ws = WebSocketPeer.new()
+	var err := _ws.connect_to_url(RELAY_URL)
+	if err != OK:
+		error_reported.emit("Connection failed (error %d)." % err)
+		_ws = null
+		_pending_action = {}
 		return
-	lobby_id = int(new_lobby_id)
-	is_host = true
-	state = ConnState.IN_LOBBY_HOST
-	hosting_started.emit(str(lobby_id))
+	_socket_open = false
+	state = ConnState.CONNECTING
+	set_process(true)
 
-func _on_lobby_joined(joined_lobby_id: Variant, _perms: Variant, _locked: Variant, response: Variant) -> void:
-	if int(response) != LOBBY_ENTER_SUCCESS:
-		error_reported.emit("Failed to join lobby (code %s)." % str(response))
-		state = ConnState.IDLE
+func _send_envelope(envelope: Dictionary) -> void:
+	if _ws == null:
 		return
-	lobby_id = int(joined_lobby_id)
-	var s: Object = _get_steam()
-	if s != null and s.has_method("getLobbyOwner"):
-		opponent_id = int(s.getLobbyOwner(lobby_id))
-	is_host = false
-	state = ConnState.IN_LOBBY_CLIENT
-	join_succeeded.emit()
+	_ws.send_text(JSON.stringify(envelope))
 
-func _on_lobby_chat_update(the_lobby: Variant, changed_id: Variant, _maker_id: Variant, chat_state: Variant) -> void:
-	if int(the_lobby) != lobby_id:
+func _process(_delta: float) -> void:
+	if _ws == null:
+		set_process(false)
 		return
-	var cs := int(chat_state)
-	var changed := int(changed_id)
-	if cs & CHAT_MEMBER_STATE_ENTERED:
-		# Someone joined. For the host, that's the opponent arriving.
-		if is_host and changed != my_steam_id:
-			opponent_id = changed
-			opponent_joined.emit()
-	elif cs & (CHAT_MEMBER_STATE_LEFT | CHAT_MEMBER_STATE_DISCONNECTED | CHAT_MEMBER_STATE_KICKED | CHAT_MEMBER_STATE_BANNED):
-		if changed != my_steam_id:
-			disconnected_from_lobby.emit("Opponent left the lobby.")
-			lobby_id = 0
-			opponent_id = 0
-			is_host = false
-			state = ConnState.IDLE
+	_ws.poll()
+	var ready_state := _ws.get_ready_state()
+	match ready_state:
+		WebSocketPeer.STATE_OPEN:
+			# First time we see STATE_OPEN, send the queued create/join.
+			if not _socket_open:
+				_socket_open = true
+				if not _pending_action.is_empty():
+					_send_envelope(_pending_action)
+					_pending_action = {}
+			while _ws.get_available_packet_count() > 0:
+				var bytes: PackedByteArray = _ws.get_packet()
+				_handle_packet(bytes.get_string_from_utf8())
+		WebSocketPeer.STATE_CLOSED:
+			var code := _ws.get_close_code()
+			var reason := _ws.get_close_reason()
+			# Build the user-facing reason string. -1 / empty on most graceful
+			# closes; surface those as "Disconnected." instead of cryptic codes.
+			var msg: String
+			if reason != "":
+				msg = reason
+			elif code != -1 and code != 1000 and code != 1005:
+				msg = "Connection closed (code %d)." % code
+			else:
+				msg = "Disconnected."
+			set_process(false)
+			_reset_state()
+			disconnected_from_lobby.emit(msg)
 
-func _on_lobby_message(the_lobby: Variant, user: Variant, message: Variant, _chat_type: Variant) -> void:
-	if int(the_lobby) != lobby_id:
-		return
-	# Ignore echo of our own messages (Steam sometimes delivers them).
-	if int(user) == my_steam_id:
-		return
-	var text: String
-	if message is PackedByteArray:
-		text = (message as PackedByteArray).get_string_from_utf8()
-	else:
-		text = str(message)
+func _handle_packet(text: String) -> void:
 	var parsed: Variant = JSON.parse_string(text)
-	if parsed == null:
+	if typeof(parsed) != TYPE_DICTIONARY:
 		return
-	message_received.emit(parsed)
+	var t := str(parsed.get("type", ""))
+	match t:
+		"created":
+			# Relay assigned us a room code and we're now waiting for a peer.
+			room_code = str(parsed.get("code", ""))
+			is_host = true
+			state = ConnState.IN_ROOM_HOST
+			hosting_started.emit(room_code)
+		"joined":
+			# We successfully joined an existing room.
+			room_code = str(parsed.get("code", ""))
+			is_host = false
+			state = ConnState.IN_ROOM_CLIENT
+			join_succeeded.emit()
+		"opponent_joined":
+			# Host-side notification that a second client entered our room.
+			opponent_joined.emit()
+		"msg":
+			# A relayed game message from the opponent. Pass through verbatim.
+			message_received.emit(parsed.get("data"))
+		"opponent_left":
+			# The relay tells us our peer dropped. Stay connected to the relay
+			# (in case they reconnect), but surface the disconnect.
+			disconnected_from_lobby.emit("Opponent left the room.")
+			# Close the socket too — once a peer is gone, this room is dead;
+			# the relay also tears the room down on its end.
+			if _ws != null:
+				_ws.close()
+		"error":
+			error_reported.emit(str(parsed.get("message", "Relay error.")))
+
+func _reset_state() -> void:
+	_ws = null
+	_socket_open = false
+	state = ConnState.IDLE
+	room_code = ""
+	is_host = false
+	_pending_action = {}
