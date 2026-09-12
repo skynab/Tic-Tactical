@@ -21,6 +21,7 @@ Multiplayer="*res://Multiplayer.gd"
 
 [display]
 
-window/size/viewport_width=760
-window/size/viewport_height=1040
-window/stretch/scale=1.2
+window/size/viewport_width=720
+window/size/viewport_height=980
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"

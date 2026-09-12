@@ -19,15 +19,13 @@ color = Color(0.12, 0.12, 0.16, 1)
 
 [node name="VBox" type="VBoxContainer" parent="."]
 layout_mode = 1
-anchors_preset = 8
-anchor_left = 0.5
-anchor_top = 0.5
-anchor_right = 0.5
-anchor_bottom = 0.5
-offset_left = -340.0
-offset_top = -480.0
-offset_right = 340.0
-offset_bottom = 480.0
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 8.0
+offset_top = 8.0
+offset_right = -8.0
+offset_bottom = -8.0
 alignment = 1
 
 [node name="Title" type="Label" parent="VBox"]
@@ -319,12 +317,12 @@ theme_override_font_sizes/font_size = 18
 
 [node name="ConfigDialog" type="ConfirmationDialog" parent="."]
 title = "New Game Settings"
-size = Vector2i(640, 730)
+size = Vector2i(620, 620)
 ok_button_text = "Start Game"
 cancel_button_text = "Cancel"
 
 [node name="ConfigBox" type="VBoxContainer" parent="ConfigDialog"]
-custom_minimum_size = Vector2(600, 660)
+custom_minimum_size = Vector2(560, 0)
 theme_override_constants/separation = 10
 
 [node name="GridSizeRow" type="HBoxContainer" parent="ConfigDialog/ConfigBox"]

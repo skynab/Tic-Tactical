@@ -26,17 +26,45 @@ separate ~150-line Node.js service used only for online play.
 - Two-player local play (X and O take turns)
 - Winning line highlights when someone wins
 - Score tracking across rounds (X wins / O wins / Draws)
-- **New Game Settings dialog**: clicking **New Game** opens a popup that holds every game-config option in one place — Grid Size, Arrow Uses per Player, Arrows End Turn, and Corner Bonus. The controls are pre-filled with the currently-applied settings every time you open the dialog. Click **Start Game** to apply the settings and reset the board, or **Cancel** to discard any changes and leave the current game alone.
+- **New Game Settings dialog**: clicking **New Game** opens a popup that holds every game-config option in one place — Grid Size, Arrow Uses per Player, Arrows End Turn, Corner Bonus, and the **win conditions** (which shapes count and what each is worth). The controls are pre-filled with the currently-applied settings every time you open the dialog. Click **Start Game** to apply the settings and reset the board, or **Cancel** to discard any changes and leave the current game alone.
 - Dark themed UI with colored X (blue) and O (orange)
+- **Scales to the screen it's on**: the UI is laid out against a fixed design resolution (720x980, set in `project.godot`) and then scaled to whatever size the window actually is, so resizing the window shrinks or grows the whole interface instead of clipping it. Two things make that work:
+  - `display/window/stretch/mode = canvas_items` with `aspect = expand` — the logical viewport never drops below the design size, so every control stays on screen at any window size; the viewport only *grows* on whichever axis has spare room, leaving the layout centered.
+  - On startup the game shrinks its window to fit the desktop's **usable** area (accounting for the taskbar and the title bar) and re-centers it. Without this the window opened taller than the desktop on an ordinary 1080p screen — a 1040px window plus a 39px title bar against 1040px of usable height — and the bottom row of controls, **New Game** included, sat below the edge of the screen where they couldn't be reached or scrolled to.
+
+  The window is freely resizable down to a 400x500 floor. If you add rows to the layout, keep the design resolution in step with them — `tests/test_main_scene.gd` fails if the content grows taller than the design viewport, which is what stops this regressing.
 - **Turn indicator**: two chips near the top of the screen showing **X** and **O**. The active player's chip lights up with a bright player-colored border, a tinted background, and a full-color letter; the inactive chip is dimmed. When the game ends both chips are dimmed.
 - Directional shift arrows (▲ ▼ ◀ ▶) that slide every piece one cell in that direction; pieces sliding off the edge are removed
 - **Per-player arrow-use limit** *(in the New Game dialog)*: a SpinBox lets you set how many times each player can click an arrow per game (default **3**). Remaining counts for each player are shown above the board. When a player runs out, the arrows disable on their turn.
 - **Arrows end turn toggle** *(in the New Game dialog)*: a CheckBox (**on by default**). When enabled (default), pressing an arrow also ends the current player's turn — just like placing a piece. When disabled, a player can keep pressing arrows until they run out of uses or place a piece.
-- **Online multiplayer (WebSocket relay)**: one player clicks **Host** to open a room on the relay and receives a short alphanumeric **room code**; the other pastes the code and clicks **Join**. Host is X, joiner is O, and the turn indicator adds a **"(You)"** marker next to your side so it's clear who's who. The host is authoritative — only the host can open the New Game dialog, change rules, or Reset Scores; the client's controls for those are locked while connected. Every click, arrow press, New Game, and Reset Scores is forwarded through the relay verbatim. The game still runs fine offline; if `RELAY_URL` in `Multiplayer.gd` is still pointing at the placeholder, the Host/Join buttons display a "Relay URL not configured" notice. Deployment instructions for the relay (Fly.io / Railway / Render free tiers) are in `relay_server/README.md`.
+- **Online multiplayer (WebSocket relay)**: one player clicks **Host** to open a room on the relay and receives a short alphanumeric **room code**; the other pastes the code and clicks **Join**. Host is X, joiner is O, and the turn indicator adds a **"(You)"** marker next to your side so it's clear who's who. The host is authoritative — only the host can open the New Game dialog, change rules, or Reset Scores; the client's controls for those are locked while connected. The synced rule set includes the win conditions, their point values, and the points target, so both sides always score the same board the same way. Every click, arrow press, New Game, and Reset Scores is forwarded through the relay verbatim. The game still runs fine offline; if `RELAY_URL` in `Multiplayer.gd` is still pointing at the placeholder, the Host/Join buttons display a "Relay URL not configured" notice. Deployment instructions for the relay (Fly.io / Railway / Render free tiers) are in `relay_server/README.md`.
 - **Selectable grid size** *(in the New Game dialog)*: an OptionButton lets you choose between **3x3**, **4x4**, and **MNK (custom)**.
   - 3x3 wins: rows, columns, and the two main diagonals (classic).
   - 4x4 wins: rows (4-in-a-row), columns, the two main diagonals, **any 2x2 square** of four matching marks, and **diamonds** — four matching marks in the cells directly above, below, left, and right of any single center cell. (The center cell itself is not part of the diamond — only the four surrounding cells must match.)
   - **MNK (custom)** lets you configure an **m,n,k-game** ([Wikipedia](https://en.wikipedia.org/wiki/M,n,k-game)): pick **M** = number of rows (3–12), **N** = number of columns (3–12), and **K** = in-a-row length needed to win (3–10, automatically clamped to max(M, N)). Wins are any **K matching marks in a horizontal, vertical, or diagonal line**. Classic tic-tac-toe is 3,3,3; Gomoku-style play is 12,12,5. The 4x4 preset's squares+diamonds are *not* included in MNK mode — it's strict k-in-a-row. The M/N/K spinboxes sit just below the Grid Size dropdown in the New Game dialog and are always visible; they're editable only when Grid Size is set to **MNK (custom)** and greyed out otherwise, since they only apply to that mode.
+  - Each mode's win conditions above are what choosing it *seeds*, not a fixed rule: the **Win conditions** grid below the dropdown lets you tick any shape on or off for any grid size, so you can play 3x3 with diamonds or 4x4 without squares. See **Scored win conditions**.
+- **Scored win conditions** *(in the New Game dialog)*: win conditions are no longer just "K in a row" — the dialog has a **Win conditions** grid where you tick which shapes count and set how many **points** each is worth. Any ticked shape is a genuine win condition: completing it can take the round on its own.
+
+  | Shape | Default points | What it is |
+  | --- | --- | --- |
+  | **K in a row** | 3 | Rows, columns, and diagonals — the classic condition. |
+  | **Four corners** | 2 | All four corner squares of the board. |
+  | **Side squares** | 1 | Any **N** of the non-corner border cells (N is set next to the checkbox, default 3). On a 3x3 that's any 3 of the four edge midpoints. |
+  | **2x2 square** | 2 | Any 2x2 block of four matching marks. |
+  | **Diamond** | 2 | Four matching marks directly above, below, left, and right of a single center cell (the center itself isn't part of it). |
+
+  Notes on how they score:
+  - **Side squares pays once per round per player.** Holding all four sides of a 3x3 technically completes four different 3-cell subsets, but that's one achievement, so it pays once — not four times.
+  - **A longer run pays per K-window.** With K=3, a 5-in-a-row contains three distinct 3-windows and pays for each. Extending a line is rewarded rather than ignored.
+  - **Each shape pays a player once per round.** Sliding a line off its cells and back on with the arrows earns nothing the second time; sliding it to a *new* position is a different shape and does pay. This keeps the shift arrows from becoming a points farm.
+  - Picking a **grid size** re-seeds the shape checkboxes to that preset's classic rule set: **4x4** switches 2x2 squares and diamonds on, **3x3** and **MNK** switch them off. You're free to tick anything back on afterwards.
+  - Untick everything and **K in a row** is switched back on — an unwinnable board isn't a useful option. Same if the only ticked shape can't exist on the board (e.g. "any 5 side squares" on a 3x3, which only has four). The dialog shows an amber note whenever that's about to happen.
+  - **Side squares** on a large board is a combinatorial explosion (a 12x12 board has 40 edge cells, and "any 8" of those is ~77 million shapes), so generation refuses above 20,000 combinations and the dialog warns you. Lower the count or the board size.
+- **Points to win a round** *(in the New Game dialog)*: the **Round ends on** dropdown chooses how a round is decided.
+  - **First win condition** (default) — classic behavior: the first completed condition ends the round immediately, whatever it's worth. Point values still show in the status line but don't change the outcome.
+  - **Points target** — completing a condition **banks its points and play continues**. The first player to reach the **Points to win** value (default 5) takes the round. A running total appears above the board (`X points: 2 / 5`), and the status line reports each payout (`X +2 Four corners`). Because play continues, one arrow shift can complete several conditions at once — all of them pay.
+
+  Two tie-breaks apply in points mode: if a single move pushes **both** players to the target, the higher total wins and a dead-even tie goes to the player who just moved; and if the board fills with nobody at the target, whoever banked **more points** takes the round instead of it being an automatic draw (equal points is still a draw).
 - **Arrow Bonus** *(in the New Game dialog)*: a dropdown labeled **"Arrow Bonus (+1 arrow on ★ squares)"** with options **Off**, **Corners**, and **Random** (default: **Corners**). In **Corners** mode, each new game spawns a small yellow ★ icon on the four corner squares of the board. In **Random** mode, every cell on the board independently has a **25% chance** of being armed with a ★ at the start of each new game (so each game gets a different pattern, which is rolled once by the host and synced to the client in online play). In either mode, the first time a player *places* (clicks) on a ★ cell, they gain **+1 arrow use** and the bonus is consumed. The bonus is only triggered by direct placement, not by pieces shifting onto an armed cell. Choose **Off** to disable ★s entirely. The dropdown is designed to take more patterns (center, edges, etc.) as they're added.
 
 ## Project Files
@@ -46,10 +74,10 @@ Inside `tictactoe/`:
 - `project.godot` — Godot project config (registers the `Multiplayer` autoload)
 - `Main.tscn` — Main scene with all UI nodes
 - `Main.gd` — Game logic (win detection, score, turn management, network input gating)
-- `GameLogic.gd` — Pure static helpers (win-line generation, corner indices, winner detection). Lives here so the unit tests can exercise it without the scene tree.
+- `GameLogic.gd` — Pure static helpers (win-condition generation, corner/edge indices, winner detection, point scoring and claim tracking). Lives here so the unit tests can exercise it without the scene tree.
 - `Cell.gd` — Individual board cell button behavior
 - `Multiplayer.gd` — WebSocket-relay multiplayer autoload (host/join/send/receive). Edit `RELAY_URL` at the top to point at your deployed relay.
-- `tests/` — GDScript unit tests (`test_game_logic.gd`) and the headless runner (`run_tests.gd`).
+- `tests/` — GDScript tests and the headless runner: `test_game_logic.gd` (pure board math), `test_main_scene.gd` (integration tests that instantiate `Main.tscn` and play moves through it), `run_tests.gd` (runner).
 - `icon.svg` — App icon
 
 At the repo root:
@@ -57,7 +85,10 @@ At the repo root:
 - `relay_server/` — tiny Node.js WebSocket relay used for online play. See its own README for local-run and deployment instructions.
 
 ## Running Tests
-Unit tests cover the pure board math in `GameLogic.gd` — win-line generation for every grid mode, corner indices, and winner detection (row/column/diagonal/draw/in-progress plus the 4x4 square and diamond cases).
+Two suites run from the same headless runner:
+
+- **`test_game_logic.gd`** — the pure board math in `GameLogic.gd`: win-line generation for every grid mode, corner and edge indices, winner detection (row/column/diagonal/draw/in-progress plus the 4x4 square and diamond cases), scored-pattern construction, the combinatorics behind "any N side squares", and the claim bookkeeping that stops a shape from paying twice.
+- **`test_main_scene.gd`** — integration tests that instantiate `Main.tscn` and play moves through it. These cover the things pure functions can't see: that every node path in the scene/script wiring resolves, that classic and points modes reach the right verdicts, that shifting can't farm the same line repeatedly, that New Game clears banked points, and that the New Game dialog is still big enough for the controls it holds.
 
 To run them locally (from the repo root):
 
@@ -66,3 +97,5 @@ godot --headless --path tictactoe --script res://tests/run_tests.gd
 ```
 
 The runner exits with status 0 on success and 1 on any failure. Every pull request is automatically checked by the GitHub Actions workflow at `.github/workflows/tests.yml`, which downloads the headless Godot binary and runs the same command.
+
+One wrinkle worth knowing if you edit the tests: Godot exits **0** when a `--script` file fails to *parse*, because it never gets as far as running anything. The runner checks each suite script with `can_instantiate()` before using it, and the CI step additionally requires the `All tests passed.` line in the output — so a syntax error in a test file fails the build instead of sailing through green.

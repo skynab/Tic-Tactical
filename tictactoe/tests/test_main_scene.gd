@@ -29,6 +29,10 @@ func run_all(root: Window) -> Array:
 	test_warning_when_edge_combinations_exceed_the_cap(root)
 	test_warning_when_nothing_is_ticked(root)
 	test_four_by_four_preset_reseeds_squares_and_diamonds(root)
+	test_config_dialog_fits_its_contents(root)
+	test_layout_fits_the_design_viewport(root)
+	test_stretch_settings_scale_the_ui(root)
+	test_clamped_window_size(root)
 	return failures
 
 # ---------------------------------------------------------------------------
@@ -198,9 +202,208 @@ func test_empty_condition_set_falls_back_to_lines(root: Window) -> void:
 		bool(main.pattern_config["line"]["enabled"]), "the line condition should be forced back on")
 	_free_main(root, main)
 
+# Ticking a condition that can't produce any pattern on this board is the same
+# as ticking nothing, so the line fallback has to kick in there too.
+func test_unavailable_edges_condition_falls_back_to_lines(root: Window) -> void:
+	var main := _make_main(root)
+	# A 3x3 has only four non-corner edge cells, so "any 5" is unsatisfiable.
+	_configure(main, main.WinMode.FIRST, 5, {
+		"line": {"enabled": false, "points": 3},
+		"edges": {"enabled": true, "points": 1, "count": 5},
+	})
+	_expect_eq(main.win_patterns.size(), 8, "an unsatisfiable condition should fall back to lines")
+	_expect_true(
+		bool(main.pattern_config["line"]["enabled"]), "the line condition should be forced back on")
+	_free_main(root, main)
+
+# ---------------------------------------------------------------------------
+# Dialog validation warnings
+# ---------------------------------------------------------------------------
+
+func test_no_warning_for_a_sane_config(root: Window) -> void:
+	var main := _make_main(root)
+	_configure(main, main.WinMode.POINTS, 5, {
+		"line": {"enabled": true, "points": 3},
+		"edges": {"enabled": true, "points": 1, "count": 3},
+	})
+	_expect_eq(main._win_rule_warning(), "", "a workable config should warn about nothing")
+	_free_main(root, main)
+
+func test_warning_when_board_has_too_few_edge_cells(root: Window) -> void:
+	var main := _make_main(root)
+	_configure(main, main.WinMode.POINTS, 5, {
+		"line": {"enabled": true, "points": 3},
+		"edges": {"enabled": true, "points": 1, "count": 5},
+	})
+	var warning: String = main._win_rule_warning()
+	_expect_true(warning.contains("never happen"),
+		"should warn that 'any 5' is impossible on a 3x3, got: %s" % warning)
+	# The live label is kept in step with it, not just the function.
+	_expect_eq(main.pattern_warn_label.text, warning, "warning label should show the warning")
+	_free_main(root, main)
+
+# 12x12 has 40 non-corner edge cells; "any 8" of those is ~77 million
+# combinations, so generation refuses and the dialog says so.
+func test_warning_when_edge_combinations_exceed_the_cap(root: Window) -> void:
+	var main := _make_main(root)
+	_select_mnk(main, 12, 12, 5)
+	_configure(main, main.WinMode.POINTS, 5, {
+		"line": {"enabled": true, "points": 3},
+		"edges": {"enabled": true, "points": 1, "count": 8},
+	})
+	var warning: String = main._win_rule_warning()
+	_expect_true(warning.contains("limit"),
+		"should warn that the combination count is over the cap, got: %s" % warning)
+	# The board still works — lines are unaffected, the edges condition is just
+	# dropped.
+	_expect_true(main.win_patterns.size() > 0, "lines should still be generated")
+	for pattern in main.win_patterns:
+		if String(pattern["kind"]) == GameLogic.KIND_EDGES:
+			failures.append("over-cap edges condition should have produced no patterns")
+			break
+	_free_main(root, main)
+
+func test_warning_when_nothing_is_ticked(root: Window) -> void:
+	var main := _make_main(root)
+	for kind in main.pattern_controls:
+		main.pattern_controls[kind]["check"].button_pressed = false
+	var warning: String = main._win_rule_warning()
+	_expect_true(warning.contains("No win condition"),
+		"should warn when nothing is ticked, got: %s" % warning)
+	_free_main(root, main)
+
+# The 4x4 preset has always meant "lines plus 2x2 squares plus diamonds", so
+# choosing it re-seeds those two checkboxes; the other modes clear them.
+func test_four_by_four_preset_reseeds_squares_and_diamonds(root: Window) -> void:
+	var main := _make_main(root)
+	_select_grid_mode(main, main.GridMode.FOUR)
+	_expect_true(bool(main.pattern_controls[GameLogic.KIND_SQUARE]["check"].button_pressed),
+		"4x4 should switch the 2x2-square condition on")
+	_expect_true(bool(main.pattern_controls[GameLogic.KIND_DIAMOND]["check"].button_pressed),
+		"4x4 should switch the diamond condition on")
+	main._on_restart_pressed()
+	# 4 rows + 4 cols + 2 diagonals + 9 squares + 4 diamonds = 23.
+	_expect_eq(main.win_patterns.size(), 23, "4x4 preset should give the classic 23 conditions")
+
+	_select_grid_mode(main, main.GridMode.THREE)
+	_expect_false(bool(main.pattern_controls[GameLogic.KIND_SQUARE]["check"].button_pressed),
+		"3x3 should switch the 2x2-square condition back off")
+	_expect_false(bool(main.pattern_controls[GameLogic.KIND_DIAMOND]["check"].button_pressed),
+		"3x3 should switch the diamond condition back off")
+	_free_main(root, main)
+
+# The New Game dialog's window size is hand-set in the scene, so it needs a
+# guard: big enough for the controls it holds (the win-condition grid made it
+# considerably taller), and still small enough to fit the game's viewport.
+func test_config_dialog_fits_its_contents(root: Window) -> void:
+	var main := _make_main(root)
+	var dialog: Window = main.config_dialog
+	var needed: Vector2 = dialog.get_contents_minimum_size()
+	_expect_true(float(dialog.size.x) >= needed.x,
+		"config dialog is %dpx wide but needs %d" % [dialog.size.x, int(needed.x)])
+	_expect_true(float(dialog.size.y) >= needed.y,
+		"config dialog is %dpx tall but needs %d" % [dialog.size.y, int(needed.y)])
+
+	# It's an embedded subwindow, so it has to fit the viewport it pops up in.
+	var viewport_w := int(ProjectSettings.get_setting("display/window/size/viewport_width", 760))
+	var viewport_h := int(ProjectSettings.get_setting("display/window/size/viewport_height", 1040))
+	_expect_true(dialog.size.x <= viewport_w,
+		"config dialog (%dpx) is wider than the %dpx viewport" % [dialog.size.x, viewport_w])
+	_expect_true(dialog.size.y <= viewport_h,
+		"config dialog (%dpx) is taller than the %dpx viewport" % [dialog.size.y, viewport_h])
+	_free_main(root, main)
+
+# ---------------------------------------------------------------------------
+# Scaling to different screens
+# ---------------------------------------------------------------------------
+
+# The whole scaling scheme rests on one invariant: the layout has to fit the
+# design viewport in project.godot. The stretch mode guarantees the logical
+# viewport never shrinks below that size, so if the content fits here it fits
+# at every window size — and if it doesn't, controls run off the bottom on
+# every screen. That's exactly how the bottom row went missing once, so this
+# test fails if the layout outgrows the design size again (add a row, bump the
+# viewport height to match).
+func test_layout_fits_the_design_viewport(root: Window) -> void:
+	var main := _make_main(root)
+	var vbox: Control = main.get_node("VBox")
+	var needed: Vector2 = vbox.get_combined_minimum_size()
+	var design := _design_viewport()
+	# The VBox is inset from the viewport edges; count that against the budget.
+	var inset := 16.0
+	_expect_true(needed.y + inset <= design.y,
+		"layout needs %dpx of height (+%d inset) but the design viewport is only %d — "
+		% [int(needed.y), int(inset), int(design.y)]
+		+ "raise display/window/size/viewport_height in project.godot")
+	_expect_true(needed.x + inset <= design.x,
+		"layout needs %dpx of width (+%d inset) but the design viewport is only %d"
+		% [int(needed.x), int(inset), int(design.x)])
+	_free_main(root, main)
+
+# The stretch settings are what make the UI scale with the window instead of
+# being clipped by it. They're invisible in the scene tree and easy to drop, so
+# assert them directly: without canvas_items the UI doesn't scale at all, and
+# without "expand" the viewport can shrink below the design size and clip.
+func test_stretch_settings_scale_the_ui(_root: Window) -> void:
+	_expect_eq(
+		String(ProjectSettings.get_setting("display/window/stretch/mode", "disabled")),
+		"canvas_items",
+		"display/window/stretch/mode must be canvas_items or the UI won't scale to the window")
+	_expect_eq(
+		String(ProjectSettings.get_setting("display/window/stretch/aspect", "ignore")),
+		"expand",
+		"display/window/stretch/aspect must be expand or the viewport can clip the layout")
+
+# The arithmetic behind shrinking the window onto a screen that can't fit it.
+# Pure, so the awkward cases are checked without needing those screens.
+func test_clamped_window_size(root: Window) -> void:
+	var main := _make_main(root)
+	var desired := Vector2i(720, 980)
+	var decorations := Vector2i(16, 39)
+	var margin := 24
+
+	# Roomy screen: nothing to do.
+	_expect_eq(main.clamped_window_size(desired, Vector2i(2560, 1400), decorations, margin),
+		desired, "a screen with room should leave the window alone")
+
+	# 1080p with a taskbar — the case that broke: 1040 usable, minus a 39px
+	# title bar and margin, leaves 977, so the 980-tall window has to shrink.
+	_expect_eq(main.clamped_window_size(desired, Vector2i(1920, 1040), decorations, margin),
+		Vector2i(720, 977), "a 1080p desktop should shrink the window to fit")
+
+	# A short laptop panel clamps height while leaving width alone.
+	_expect_eq(main.clamped_window_size(desired, Vector2i(1366, 728), decorations, margin),
+		Vector2i(720, 665), "a short screen should clamp the height")
+
+	# Absurdly small screens stop at the minimum rather than shrinking to
+	# nothing — better to overflow than to be unusable.
+	var tiny: Vector2i = main.clamped_window_size(desired, Vector2i(320, 200), decorations, margin)
+	_expect_eq(tiny, main.MIN_WINDOW_SIZE, "a tiny screen should floor at the minimum size")
+	_free_main(root, main)
+
+# The design resolution the layout is built against, from project.godot.
+func _design_viewport() -> Vector2:
+	return Vector2(
+		float(ProjectSettings.get_setting("display/window/size/viewport_width", 720)),
+		float(ProjectSettings.get_setting("display/window/size/viewport_height", 980)))
+
 # ---------------------------------------------------------------------------
 # Harness helpers
 # ---------------------------------------------------------------------------
+
+# Pick a grid mode the way a user would, including the signal handler that
+# re-seeds the preset's shape checkboxes (OptionButton.select alone doesn't
+# emit item_selected).
+func _select_grid_mode(main: Node, mode: int) -> void:
+	var idx: int = main.grid_size_option.get_item_index(mode)
+	main.grid_size_option.select(idx)
+	main._on_grid_size_selected(idx)
+
+func _select_mnk(main: Node, rows: int, cols: int, k: int) -> void:
+	_select_grid_mode(main, main.GridMode.MNK)
+	main.mnk_m_spin.value = float(rows)
+	main.mnk_n_spin.value = float(cols)
+	main.mnk_k_spin.value = float(k)
 
 # Instantiate Main.tscn and add it to the tree so _ready runs.
 func _make_main(root: Window) -> Node:

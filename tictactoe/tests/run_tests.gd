@@ -45,12 +45,23 @@ func _process(_delta: float) -> bool:
 # Load one test script and run it. Returns its failure list, or null when the
 # script itself couldn't be loaded (already reported). `needs_root` picks which
 # run_all signature to call.
+#
+# The can_instantiate check matters: a GDScript with a parse error still loads
+# to a non-null object, and calling new() on it raises a runtime error that
+# aborts this frame before quit() runs — which is how a broken test file ends
+# up exiting 0. Checking first turns that into a clean reported failure.
 func _run_suite(path: String, needs_root: bool) -> Variant:
 	var script: Variant = load(path)
 	if script == null:
 		printerr("Could not load %s" % path)
 		return null
+	if not (script is GDScript) or not script.can_instantiate():
+		printerr("Could not instantiate %s — parse error in the test script?" % path)
+		return null
 	var runner: Variant = script.new()
+	if runner == null:
+		printerr("Instantiating %s returned null" % path)
+		return null
 	if needs_root:
 		return runner.run_all(root)
 	return runner.run_all()

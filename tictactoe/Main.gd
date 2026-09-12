@@ -2,17 +2,34 @@ extends Control
 
 # Generalized to an M x N (cols x rows) board with a configurable "k in a
 # row" win length. Three grid modes are selectable from the UI:
-#   - "3x3"  : 3x3 board, win = 3-in-a-row (classic).
-#   - "4x4"  : 4x4 board, win = 4-in-a-row PLUS 2x2 squares and diamonds
+#   - "3x3"  : 3x3 board, 3-in-a-row (classic).
+#   - "4x4"  : 4x4 board, 4-in-a-row plus 2x2 squares and diamonds
 #              (four matching marks surrounding a center cell).
 #   - "MNK"  : user-chosen columns (M), rows (N), and line length (K).
-#              Wins are pure k-in-a-row (horizontal, vertical, or diagonal),
-#              matching the m,n,k-game definition on Wikipedia.
+#              Pure k-in-a-row (horizontal, vertical, or diagonal), matching
+#              the m,n,k-game definition on Wikipedia.
+#
+# Those are what each mode *seeds*, not a fixed rule set. Win conditions are
+# configurable shapes carrying point values — k-in-a-row, four corners, any N
+# side squares, 2x2 squares, diamonds — built by GameLogic.build_patterns from
+# `pattern_config`. Two round rules use them (see the WinMode enum): classic
+# "first completed condition wins", or "first to N points wins", where each
+# completed condition banks its points and play continues.
 #
 # Board is a flat array of length grid_cols * grid_rows, row-major.
 # Cell index at column c, row r is `r * grid_cols + c`.
 # 0 = empty, 1 = X, 2 = O.
 const CellScript = preload("res://Cell.gd")
+
+# Smallest window we'll shrink to when fitting the desktop. Below this the UI
+# scales down to the point of being unusable, so it's better to let the window
+# run off a truly tiny screen than to keep shrinking. Also used as the window's
+# min_size so the user can't drag it smaller.
+const MIN_WINDOW_SIZE := Vector2i(400, 500)
+
+# Breathing space left around the window when shrinking it to fit the screen,
+# on top of whatever the title bar and borders take.
+const SCREEN_FIT_MARGIN := 24
 
 # Use non-negative IDs so OptionButton.add_item(label, id) honors them.
 # add_item treats id == -1 as "auto-assign based on item index", which
@@ -159,6 +176,8 @@ var mp_leave_button: Button
 var mp_status_label: Label
 
 func _ready() -> void:
+	_fit_window_to_screen()
+
 	status_label = $VBox/StatusLabel
 	score_x = $VBox/ScoreContainer/ScoreX/ScoreValueX
 	score_o = $VBox/ScoreContainer/ScoreO/ScoreValueO
@@ -303,6 +322,54 @@ func _ready() -> void:
 	_update_points_ui()
 	_refresh_turn_indicator()
 	_update_mp_ui()
+
+# ---------------------------------------------------------------------------
+# Window sizing
+# ---------------------------------------------------------------------------
+
+# The window opens at the design resolution from project.godot, which is sized
+# for the layout rather than for any particular monitor. On a screen that can't
+# fit it — a laptop panel, or a 1080p desktop once the taskbar and title bar
+# come off the 1080 — the window would open taller than the desktop and push
+# the bottom row of controls (New Game, Reset Scores) somewhere the user can't
+# reach them. Shrink to fit and re-center; the canvas_items stretch mode then
+# scales the whole UI down to suit, rather than clipping it.
+func _fit_window_to_screen() -> void:
+	var window := get_window()
+	if window == null:
+		return
+	var usable: Rect2i = DisplayServer.screen_get_usable_rect(window.current_screen)
+	# Headless and some virtual displays report an empty rect; nothing to fit to.
+	if usable.size.x <= 0 or usable.size.y <= 0:
+		return
+
+	window.min_size = MIN_WINDOW_SIZE
+	# Decoration overhead (title bar, borders) counts against the screen too.
+	var decorations: Vector2i = window.get_size_with_decorations() - window.size
+	var target := clamped_window_size(window.size, usable.size, decorations, SCREEN_FIT_MARGIN)
+	if target == window.size:
+		return
+	window.size = target
+	# Shrinking keeps the old top-left, which can leave the window hanging off
+	# the bottom of the screen, so re-center it on the usable area.
+	var decorated: Vector2i = window.get_size_with_decorations()
+	window.position = usable.position + (usable.size - decorated) / 2
+
+# Largest window size that fits a screen whose usable area is `usable`, once
+# `decorations` and a `margin` of breathing space are subtracted, never growing
+# past `desired` and never shrinking below MIN_WINDOW_SIZE.
+#
+# Split out as pure arithmetic so the tests can cover the small-screen cases
+# without needing a real display to run on.
+static func clamped_window_size(
+		desired: Vector2i,
+		usable: Vector2i,
+		decorations: Vector2i,
+		margin: int) -> Vector2i:
+	var room := Vector2i(
+		maxi(MIN_WINDOW_SIZE.x, usable.x - decorations.x - margin),
+		maxi(MIN_WINDOW_SIZE.y, usable.y - decorations.y - margin))
+	return Vector2i(mini(desired.x, room.x), mini(desired.y, room.y))
 
 # ---------------------------------------------------------------------------
 # Board construction

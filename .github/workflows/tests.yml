@@ -44,4 +44,15 @@ jobs:
           ./godot --headless --path tictactoe --import --quit || true
 
       - name: Run unit tests
-        run: ./godot --headless --path tictactoe --script res://tests/run_tests.gd
+        # Godot exits 0 when a --script file fails to *parse* — it never gets
+        # as far as running anything, so a syntax error in the runner would
+        # sail through as a green build. Guard against that by also requiring
+        # the runner's success line in the output, not just the exit code.
+        run: |
+          set -euo pipefail
+          ./godot --headless --path tictactoe --script res://tests/run_tests.gd 2>&1 | tee test-output.log
+          if ! grep -q "^All tests passed\.$" test-output.log; then
+            echo "::error::Test runner did not report success — see the log above." \
+              "This usually means the runner or a test script failed to load."
+            exit 1
+          fi
