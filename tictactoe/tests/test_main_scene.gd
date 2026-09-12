@@ -35,6 +35,7 @@ func run_all(root: Window) -> Array:
 	test_clamped_window_size(root)
 	test_win_condition_diagrams(root)
 	test_diagrams_dim_when_condition_is_off(root)
+	test_export_presets_match_the_build_workflow(root)
 	return failures
 
 # ---------------------------------------------------------------------------
@@ -432,6 +433,33 @@ func test_diagrams_dim_when_condition_is_off(root: Window) -> void:
 	main.pattern_controls[GameLogic.KIND_CORNERS]["check"].button_pressed = true
 	_expect_eq(dim.modulate.a, 1.0, "ticking a condition should brighten its diagram")
 	_free_main(root, main)
+
+# ---------------------------------------------------------------------------
+# Build configuration
+# ---------------------------------------------------------------------------
+
+# .github/workflows/build.yml exports by preset *name*. Opening Project >
+# Export in the editor rewrites export_presets.cfg, and renaming or reordering
+# a preset there would break the build with a confusing "no preset found"
+# error long after the change. Pin the names here so it fails in the test suite
+# instead, where the message says what happened.
+func test_export_presets_match_the_build_workflow(_root: Window) -> void:
+	var cfg := ConfigFile.new()
+	var err := cfg.load("res://export_presets.cfg")
+	if err != OK:
+		failures.append(
+			"export_presets.cfg is missing or unreadable (error %d) — the build workflow "
+			% err + "has nothing to export with")
+		return
+	var names: Array = []
+	for section in cfg.get_sections():
+		# Preset headers are "preset.N"; their settings live in "preset.N.options".
+		if section.begins_with("preset.") and not section.ends_with(".options"):
+			names.append(String(cfg.get_value(section, "name", "")))
+	for expected in ["Windows Desktop", "Linux", "Web"]:
+		_expect_true(names.has(expected),
+			"build.yml exports a preset named \"%s\" but export_presets.cfg has %s"
+			% [expected, str(names)])
 
 # The design resolution the layout is built against, from project.godot.
 func _design_viewport() -> Vector2:

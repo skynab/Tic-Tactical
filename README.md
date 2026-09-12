@@ -85,6 +85,31 @@ At the repo root:
 
 - `relay_server/` — tiny Node.js WebSocket relay used for online play. See its own README for local-run and deployment instructions.
 
+## Automated Builds
+`.github/workflows/build.yml` exports the game on every push and pull request against `dev` (and on demand from the **Actions** tab), producing three downloadable artifacts per run:
+
+| Artifact | Contents |
+| --- | --- |
+| `tictactoe-windows` | `TicTacToe.exe` — a single self-contained file |
+| `tictactoe-linux` | `TicTacToe.x86_64` — likewise; `chmod +x` it before running |
+| `tictactoe-web` | `index.html` plus the wasm/js/pck — serve the folder over HTTP |
+
+To get a build: open the **Actions** tab, click the run you want, and download the artifact from the bottom of the run summary. Nothing is published publicly — artifacts are visible to anyone who can see the repo, and GitHub deletes them after 14 days (`retention-days` in the workflow).
+
+Notes on how it's set up:
+
+- **Both desktop presets embed the `.pck` into the binary**, so each download is one file that still runs when it's the only thing someone extracts. (By default Godot writes the executable and its `.pck` side by side, and the game breaks if they're separated.)
+- **The web build has threads disabled** (`variant/thread_support=false`). A threaded web build only boots on a page served with cross-origin isolation headers (COOP/COEP), which static hosts — GitHub Pages included — don't send. The no-threads build runs on any static file server.
+- **The web build uses the Compatibility renderer** via `rendering/renderer/rendering_method.web="gl_compatibility"` in `project.godot`. The desktop default is Forward+, which needs Vulkan; browsers don't have it, so without this override the web export builds but won't start.
+- **`export_presets.cfg` is committed.** That file is normally editor-generated and often gitignored, but CI needs it — `godot --export-release` takes a preset *name*, and without the file there's no preset to name. The build workflow refers to the presets as `Windows Desktop`, `Linux`, and `Web`; opening Project > Export in the editor may rewrite the file, so a test (`tests/test_main_scene.gd`) asserts those three names still exist rather than letting a rename surface as a confusing CI failure.
+- **The Godot version is pinned in three places** — `GODOT_VERSION` in both workflows and `config/features` in `project.godot` — and export templates are downloaded for that exact version, since Godot rejects mismatched templates. Bump them together. The engine download and templates (~1GB) are cached between runs.
+
+To export the same builds locally, install the matching export templates (Editor > Manage Export Templates) and run from the repo root:
+
+```bash
+godot --headless --path tictactoe --export-release "Web" build/web/index.html
+```
+
 ## Running Tests
 Two suites run from the same headless runner:
 

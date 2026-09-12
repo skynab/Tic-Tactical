@@ -1,0 +1,133 @@
+name: Build
+
+# Exports the game for Windows, Linux, and the browser, and attaches each one
+# to the workflow run as a downloadable artifact. Nothing is published
+# publicly — artifacts are visible to people who can see the repo, and GitHub
+# expires them on the schedule set by `retention-days` below.
+#
+# Builds run on pushes and pull requests against dev, and can be kicked off by
+# hand from the Actions tab.
+
+on:
+  pull_request:
+    branches: [dev]
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+# A second push to the same branch makes the in-flight build pointless, so
+# cancel it rather than paying for both.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Must match the engine the project targets (config/features in
+  # project.godot). The export templates are downloaded for this exact
+  # version — Godot refuses templates whose version doesn't match, so bump
+  # both this and tests.yml together.
+  GODOT_VERSION: 4.6.2
+
+jobs:
+  export:
+    name: Export ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      # One broken platform shouldn't hide whether the others still build.
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            preset: Windows Desktop
+            # Path inside build/ that Godot writes to. The desktop presets
+            # embed the .pck into the binary, so each is a single file that
+            # still runs if it's the only thing someone extracts.
+            output: TicTacToe.exe
+            artifact: tictactoe-windows
+          - name: Linux
+            preset: Linux
+            output: TicTacToe.x86_64
+            artifact: tictactoe-linux
+          - name: Web
+            preset: Web
+            output: index.html
+            artifact: tictactoe-web
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      # Godot and its templates are ~1GB of download that never changes for a
+      # given version, so keep them between runs.
+      - name: Cache Godot ${{ env.GODOT_VERSION }} and export templates
+        id: godot-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/godot-bin
+            ~/.local/share/godot/export_templates
+          key: godot-${{ env.GODOT_VERSION }}-linux
+
+      - name: Download Godot and export templates
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+
+          mkdir -p ~/godot-bin
+          curl -fL -o godot.zip "${base}/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q godot.zip
+          mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" ~/godot-bin/godot
+          chmod +x ~/godot-bin/godot
+
+          # Templates must land in the exact directory Godot looks in, which is
+          # named for the version *and* the release status.
+          curl -fL -o templates.tpz "${base}/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          unzip -q templates.tpz
+          mkdir -p ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          mv templates/* ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable/
+
+      - name: Add Godot to PATH
+        run: echo "$HOME/godot-bin" >> "$GITHUB_PATH"
+
+      - name: Import project
+        # The first headless run builds the .godot import cache. Exporting
+        # without it produces a package missing its imported resources, so this
+        # has to succeed before the export step. `|| true` because the importer
+        # reports non-fatal noise about features the headless binary lacks.
+        run: godot --headless --path tictactoe --import --quit || true
+
+      - name: Export ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          mkdir -p "build/${{ matrix.artifact }}"
+          # Godot needs an absolute output path; a relative one resolves against
+          # the project directory (tictactoe/), not the workspace.
+          godot --headless --path tictactoe \
+            --export-release "${{ matrix.preset }}" \
+            "$GITHUB_WORKSPACE/build/${{ matrix.artifact }}/${{ matrix.output }}"
+
+      - name: Verify the export produced a file
+        # Godot does exit non-zero on the obvious failures (a missing template,
+        # a preset name that doesn't exist), so this is a belt-and-braces check
+        # rather than the main gate. It earns its place by printing the build
+        # size to the log, which is the quickest way to notice an export that
+        # "succeeded" but produced something far smaller than it should have.
+        run: |
+          set -euo pipefail
+          out="build/${{ matrix.artifact }}/${{ matrix.output }}"
+          if [ ! -s "$out" ]; then
+            echo "::error::Export produced no file at ${out}"
+            ls -laR build || true
+            exit 1
+          fi
+          echo "Exported $(du -h "$out" | cut -f1) to ${out}"
+          ls -la "build/${{ matrix.artifact }}"
+
+      - name: Upload ${{ matrix.name }} build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: build/${{ matrix.artifact }}/
+          retention-days: 14
+          if-no-files-found: error

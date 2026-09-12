@@ -17,9 +17,14 @@ jobs:
     name: Run GDScript unit tests
     runs-on: ubuntu-latest
     env:
-      # Pin the Godot version so we get reproducible results. Bump together
-      # with the minimum version documented in README.md.
-      GODOT_VERSION: 4.2.2
+      # Pin the Godot version so we get reproducible results. This has to match
+      # the engine the project targets (config/features in project.godot) and
+      # the version in build.yml — bump all three together, along with the
+      # minimum version documented in README.md. Running an older engine than
+      # the project targets is not a safe "close enough": 4.2 predates the
+      # .uid resource files in tests/, and it refuses a project saved by a
+      # newer editor rather than falling back gracefully.
+      GODOT_VERSION: 4.6.2
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
