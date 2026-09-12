@@ -142,8 +142,20 @@ var points_target_spin: SpinBox
 var points_target_label: Label
 var pattern_warn_label: Label
 # Per-pattern-kind dialog controls, keyed by GameLogic.KIND_*. Each entry is
-# {"check": CheckBox, "points": SpinBox} plus, for the edges kind, "count".
+# {"check": CheckBox, "points": SpinBox, "icon": PatternIcon} plus, for the
+# edges kind, "count".
 var pattern_controls: Dictionary = {}
+
+# Cells to light up in each win condition's little diagram. All drawn on a 3x3
+# so the shapes sit side by side and compare directly — they illustrate the
+# shape, not the live board size or K value.
+const PATTERN_DIAGRAMS := {
+	GameLogic.KIND_LINE: [0, 1, 2],        # a row (also stands for cols/diagonals)
+	GameLogic.KIND_CORNERS: [0, 2, 6, 8],  # the four corners
+	GameLogic.KIND_EDGES: [1, 3, 5],       # three of the four side squares
+	GameLogic.KIND_SQUARE: [0, 1, 3, 4],   # a 2x2 block
+	GameLogic.KIND_DIAMOND: [1, 3, 5, 7],  # the four cells around the center
+}
 var mnk_row: HBoxContainer
 var mnk_m_spin: SpinBox
 var mnk_n_spin: SpinBox
@@ -259,25 +271,33 @@ func _ready() -> void:
 		GameLogic.KIND_LINE: {
 			"check": grid.get_node("LineCheck"),
 			"points": grid.get_node("LinePointsSpin"),
+			"icon": grid.get_node("LineIcon"),
 		},
 		GameLogic.KIND_CORNERS: {
 			"check": grid.get_node("CornersCheck"),
 			"points": grid.get_node("CornersPointsSpin"),
+			"icon": grid.get_node("CornersIcon"),
 		},
 		GameLogic.KIND_EDGES: {
 			"check": grid.get_node("EdgesCheck"),
 			"points": grid.get_node("EdgesPointsSpin"),
 			"count": grid.get_node("EdgesExtra/EdgeCountSpin"),
+			"icon": grid.get_node("EdgesIcon"),
 		},
 		GameLogic.KIND_SQUARE: {
 			"check": grid.get_node("SquareCheck"),
 			"points": grid.get_node("SquarePointsSpin"),
+			"icon": grid.get_node("SquareIcon"),
 		},
 		GameLogic.KIND_DIAMOND: {
 			"check": grid.get_node("DiamondCheck"),
 			"points": grid.get_node("DiamondPointsSpin"),
+			"icon": grid.get_node("DiamondIcon"),
 		},
 	}
+	# Draw each condition's diagram once; the cells never change afterwards.
+	for kind in pattern_controls:
+		pattern_controls[kind]["icon"].setup(3, 3, PATTERN_DIAGRAMS.get(kind, []))
 	# Re-validate the dialog live so the warning line reacts as the user ticks
 	# boxes, rather than only once they press Start Game.
 	for kind in pattern_controls:
@@ -885,6 +905,12 @@ func _refresh_win_rule_visibility() -> void:
 		points_target_label.modulate = Color(1, 1, 1, 1.0 if points_active else 0.45)
 	if pattern_warn_label != null:
 		pattern_warn_label.text = _win_rule_warning()
+	# Fade the diagram of any condition that isn't in play, so which shapes
+	# actually count is readable from the diagrams alone.
+	for kind in pattern_controls:
+		var controls: Dictionary = pattern_controls[kind]
+		var on: bool = bool(controls["check"].button_pressed)
+		controls["icon"].modulate = Color(1, 1, 1, 1.0 if on else 0.3)
 
 # True while this instance is a connected non-host, in which case the host
 # owns every rule setting and our copies of those controls are read-only.

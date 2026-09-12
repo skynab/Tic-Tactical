@@ -33,6 +33,8 @@ func run_all(root: Window) -> Array:
 	test_layout_fits_the_design_viewport(root)
 	test_stretch_settings_scale_the_ui(root)
 	test_clamped_window_size(root)
+	test_win_condition_diagrams(root)
+	test_diagrams_dim_when_condition_is_off(root)
 	return failures
 
 # ---------------------------------------------------------------------------
@@ -298,6 +300,10 @@ func test_four_by_four_preset_reseeds_squares_and_diamonds(root: Window) -> void
 func test_config_dialog_fits_its_contents(root: Window) -> void:
 	var main := _make_main(root)
 	var dialog: Window = main.config_dialog
+	# Measure it as the user sees it. popup_centered grows the window to its
+	# contents minimum, so checking beforehand would test the scene's stored
+	# size rather than the size actually shown.
+	dialog.popup_centered()
 	var needed: Vector2 = dialog.get_contents_minimum_size()
 	_expect_true(float(dialog.size.x) >= needed.x,
 		"config dialog is %dpx wide but needs %d" % [dialog.size.x, int(needed.x)])
@@ -379,6 +385,52 @@ func test_clamped_window_size(root: Window) -> void:
 	# nothing — better to overflow than to be unusable.
 	var tiny: Vector2i = main.clamped_window_size(desired, Vector2i(320, 200), decorations, margin)
 	_expect_eq(tiny, main.MIN_WINDOW_SIZE, "a tiny screen should floor at the minimum size")
+	_free_main(root, main)
+
+# ---------------------------------------------------------------------------
+# Win-condition diagrams
+# ---------------------------------------------------------------------------
+
+# Every condition gets a diagram, each drawing a different shape. A diagram
+# that silently ends up blank or duplicated is the kind of thing that looks
+# fine in code and wrong on screen, so check the actual cell sets.
+func test_win_condition_diagrams(root: Window) -> void:
+	var main := _make_main(root)
+	var seen: Dictionary = {}
+	for kind in main.pattern_controls:
+		var icon: Variant = main.pattern_controls[kind].get("icon", null)
+		_expect_true(icon != null, "%s has no diagram" % kind)
+		if icon == null:
+			continue
+		var cells: Array = icon.filled
+		_expect_true(cells.size() >= 3, "%s diagram should mark at least 3 cells" % kind)
+		# Every cell has to be on the 3x3 the diagram draws.
+		for idx in cells:
+			_expect_true(int(idx) >= 0 and int(idx) < 9,
+				"%s diagram cell %s is off the 3x3" % [kind, str(idx)])
+		var signature := "%s" % [cells]
+		_expect_false(seen.has(signature),
+			"%s draws the same shape as %s" % [kind, str(seen.get(signature, ""))])
+		seen[signature] = kind
+	_expect_eq(seen.size(), 5, "all five conditions should draw a distinct shape")
+	_free_main(root, main)
+
+# An unticked condition's diagram is faded, so the grid can be read at a
+# glance without checking each box.
+func test_diagrams_dim_when_condition_is_off(root: Window) -> void:
+	var main := _make_main(root)
+	_configure(main, main.WinMode.FIRST, 5, {
+		"line": {"enabled": true, "points": 3},
+		"corners": {"enabled": false, "points": 2},
+	})
+	var lit: Control = main.pattern_controls[GameLogic.KIND_LINE]["icon"]
+	var dim: Control = main.pattern_controls[GameLogic.KIND_CORNERS]["icon"]
+	_expect_eq(lit.modulate.a, 1.0, "an enabled condition's diagram should be fully opaque")
+	_expect_true(dim.modulate.a < 1.0, "a disabled condition's diagram should be faded")
+
+	# Ticking it live brightens it without needing to start a game.
+	main.pattern_controls[GameLogic.KIND_CORNERS]["check"].button_pressed = true
+	_expect_eq(dim.modulate.a, 1.0, "ticking a condition should brighten its diagram")
 	_free_main(root, main)
 
 # The design resolution the layout is built against, from project.godot.
