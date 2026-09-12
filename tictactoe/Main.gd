@@ -26,6 +26,13 @@ enum GridMode { THREE = 3, FOUR = 4, MNK = 5 }
 # armed. Future modes (Center, Edges, …) slot in here.
 enum BonusMode { OFF = 0, CORNERS = 1, RANDOM = 2 }
 
+# How a round is decided.
+#   FIRST  — classic: the first completed win condition ends the round
+#            immediately, whatever it's worth.
+#   POINTS — every completed win condition banks its point value and play
+#            continues; the first player to reach `points_target` wins.
+enum WinMode { FIRST = 0, POINTS = 1 }
+
 var grid_cols := 3   # M
 var grid_rows := 3   # N
 var win_length := 3  # K
@@ -40,8 +47,37 @@ var scores := {1: 0, 2: 0, "draw": 0}
 var max_shifts := 3
 var shifts_left := {1: 3, 2: 3}
 
-# Computed whenever the board dimensions or win length change.
-var win_lines: Array = []
+# Scored win conditions for the current board, rebuilt whenever the board
+# dimensions, win length, or the pattern config change. Each entry is a
+# Dictionary from GameLogic.make_pattern — cells plus a point value.
+var win_patterns: Array = []
+
+# Which win conditions are in play and what each is worth. Mirrors the
+# checkboxes + point spinboxes in the New Game dialog; consumed by
+# GameLogic.build_patterns. Defaults reproduce the classic game: only
+# k-in-a-row counts.
+var pattern_config: Dictionary = {
+	GameLogic.KIND_LINE: {"enabled": true, "points": 3},
+	GameLogic.KIND_CORNERS: {"enabled": false, "points": 2},
+	GameLogic.KIND_EDGES: {"enabled": false, "points": 1, "count": 3},
+	GameLogic.KIND_SQUARE: {"enabled": false, "points": 2},
+	GameLogic.KIND_DIAMOND: {"enabled": false, "points": 2},
+}
+
+# Round-decision rule and, for WinMode.POINTS, the score needed to take it.
+var win_mode: int = WinMode.FIRST
+var points_target := 5
+
+# Points banked this round, and the set of pattern ids each player has
+# already been paid for. Claiming is what stops a player from farming one
+# shape by shifting pieces off it and back on — see
+# GameLogic.collect_unclaimed. Both reset on New Game.
+var round_points := {1: 0, 2: 0}
+var claimed_patterns := {1: {}, 2: {}}
+
+# Short note appended to the status line describing the most recent scoring
+# event ("X +2 Four corners"). Cleared at the start of each resolution.
+var last_score_note := ""
 
 # "Arrow Bonus" feature: when enabled, a new game arms selected cells with
 # a yellow ★ icon. The first time a player places a piece on one of those
@@ -81,6 +117,16 @@ var grid_size_option: OptionButton
 var grid_container: GridContainer
 var bonus_option: OptionButton
 var arrows_end_turn_checkbox: CheckBox
+var points_row: HBoxContainer
+var points_label_x: Label
+var points_label_o: Label
+var win_mode_option: OptionButton
+var points_target_spin: SpinBox
+var points_target_label: Label
+var pattern_warn_label: Label
+# Per-pattern-kind dialog controls, keyed by GameLogic.KIND_*. Each entry is
+# {"check": CheckBox, "points": SpinBox} plus, for the edges kind, "count".
+var pattern_controls: Dictionary = {}
 var mnk_row: HBoxContainer
 var mnk_m_spin: SpinBox
 var mnk_n_spin: SpinBox
@@ -173,6 +219,55 @@ func _ready() -> void:
 	arrows_end_turn_checkbox = $ConfigDialog/ConfigBox/ArrowsEndTurnRow/ArrowsEndTurnCheckBox
 	arrows_end_turn_checkbox.button_pressed = arrows_end_turn
 
+	points_row = $VBox/PointsRow
+	points_label_x = $VBox/PointsRow/PointsX
+	points_label_o = $VBox/PointsRow/PointsO
+
+	# Win-condition / scoring controls.
+	win_mode_option = $ConfigDialog/ConfigBox/WinRuleRow/WinModeOption
+	win_mode_option.clear()
+	win_mode_option.add_item("First win condition", WinMode.FIRST)
+	win_mode_option.add_item("Points target", WinMode.POINTS)
+	win_mode_option.select(win_mode_option.get_item_index(win_mode))
+	win_mode_option.item_selected.connect(_on_win_mode_selected)
+	points_target_label = $ConfigDialog/ConfigBox/WinRuleRow/PointsTargetLabel
+	points_target_spin = $ConfigDialog/ConfigBox/WinRuleRow/PointsTargetSpinBox
+	points_target_spin.value = float(points_target)
+	pattern_warn_label = $ConfigDialog/ConfigBox/PatternWarnRow/PatternWarnLabel
+
+	var grid := $ConfigDialog/ConfigBox/PatternGrid
+	pattern_controls = {
+		GameLogic.KIND_LINE: {
+			"check": grid.get_node("LineCheck"),
+			"points": grid.get_node("LinePointsSpin"),
+		},
+		GameLogic.KIND_CORNERS: {
+			"check": grid.get_node("CornersCheck"),
+			"points": grid.get_node("CornersPointsSpin"),
+		},
+		GameLogic.KIND_EDGES: {
+			"check": grid.get_node("EdgesCheck"),
+			"points": grid.get_node("EdgesPointsSpin"),
+			"count": grid.get_node("EdgesExtra/EdgeCountSpin"),
+		},
+		GameLogic.KIND_SQUARE: {
+			"check": grid.get_node("SquareCheck"),
+			"points": grid.get_node("SquarePointsSpin"),
+		},
+		GameLogic.KIND_DIAMOND: {
+			"check": grid.get_node("DiamondCheck"),
+			"points": grid.get_node("DiamondPointsSpin"),
+		},
+	}
+	# Re-validate the dialog live so the warning line reacts as the user ticks
+	# boxes, rather than only once they press Start Game.
+	for kind in pattern_controls:
+		var controls: Dictionary = pattern_controls[kind]
+		controls["check"].toggled.connect(_on_pattern_control_changed.unbind(1))
+		if controls.has("count"):
+			controls["count"].value_changed.connect(_on_pattern_control_changed.unbind(1))
+	_sync_pattern_controls_to_config()
+
 	turn_x_box = $VBox/TurnIndicatorRow/TurnXBox
 	turn_o_box = $VBox/TurnIndicatorRow/TurnOBox
 	turn_x_label = $VBox/TurnIndicatorRow/TurnXBox/TurnXLabel
@@ -205,6 +300,7 @@ func _ready() -> void:
 	_init_bonuses(_bonus_indices(bonus_mode))
 	_refresh_bonus_icons()
 	_update_shift_ui()
+	_update_points_ui()
 	_refresh_turn_indicator()
 	_update_mp_ui()
 
@@ -256,8 +352,16 @@ func _rebuild_board() -> void:
 		b.pressed.connect(_on_cell_pressed.bind(i))
 		cells.append(b)
 
-	var include_square_diamond: bool = grid_mode == GridMode.FOUR
-	win_lines = GameLogic.generate_win_lines(grid_cols, grid_rows, win_length, include_square_diamond)
+	_rebuild_patterns()
+
+# Regenerate the scored win-condition set for the current dimensions and
+# pattern config. Split out from _rebuild_board because the patterns can
+# change while the dimensions stay put (the user ticks "Four corners" on the
+# same 3x3 board), and clears the round's claim bookkeeping either way — a
+# banked pattern id is only meaningful against the set it came from.
+func _rebuild_patterns() -> void:
+	win_patterns = GameLogic.build_patterns(grid_cols, grid_rows, win_length, pattern_config)
+	claimed_patterns = {1: {}, 2: {}}
 
 # ---------------------------------------------------------------------------
 # Play & shift
@@ -283,34 +387,140 @@ func _on_cell_pressed(index: int) -> void:
 		bonus_armed[index] = false
 		shifts_left[current_player] = shifts_left.get(current_player, 0) + 1
 	_refresh_bonus_icons()
-	_check_and_resolve()
+	_resolve_board(true)
 
-func _check_and_resolve() -> void:
-	var winner := _check_winner()
-	if winner != 0:
-		game_over = true
-		if winner == -1:
-			status_label.text = "It's a draw!"
-			status_label.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
-			scores["draw"] += 1
-			score_draw.text = str(scores["draw"])
-		else:
-			var pname := "X" if winner == 1 else "O"
-			status_label.text = "%s wins!" % pname
-			var col := Color(0.4, 0.8, 1.0) if winner == 1 else Color(1.0, 0.6, 0.4)
-			status_label.add_theme_color_override("font_color", col)
-			scores[winner] += 1
-			score_x.text = str(scores[1])
-			score_o.text = str(scores[2])
-			_highlight_winner(winner)
-		_disable_all_cells()
-		_update_shift_ui()
-		_refresh_turn_indicator()
+# ---------------------------------------------------------------------------
+# Resolution & scoring
+# ---------------------------------------------------------------------------
+
+# Score whatever the board now shows and decide whether the round is over.
+# Called after every piece placement and every arrow shift.
+#
+# `advance_turn` says whether a non-terminal outcome should hand play to the
+# other player: always true after placing a piece, and true after an arrow
+# press only when the "arrows end turn" rule is on.
+func _resolve_board(advance_turn: bool) -> void:
+	last_score_note = ""
+	var winner := 0
+
+	if win_mode == WinMode.POINTS:
+		# Bank every newly-completed condition — a single shift can complete
+		# several at once, and each pays — then see if anyone hit the target.
+		_award_points(GameLogic.collect_unclaimed(board, win_patterns, claimed_patterns))
+		winner = _points_winner()
 	else:
+		# Classic rule: the first completed condition takes the round outright,
+		# whatever it's worth. When one move completes several at once (quite
+		# possible after a shift), the most valuable one is credited, with ties
+		# going to the player who just moved.
+		var best: Variant = null
+		for entry in GameLogic.completed_patterns(board, win_patterns):
+			if best == null or _outranks(entry, best):
+				best = entry
+		if best != null:
+			winner = int(best["player"])
+			var earned := GameLogic.pattern_points(best["pattern"])
+			round_points[winner] = round_points.get(winner, 0) + earned
+			last_score_note = _score_note(winner, best["pattern"])
+
+	if winner == 0 and GameLogic.is_board_full(board):
+		# Board full and nobody reached the target. In points mode the round
+		# still has a result — whoever banked more takes it, dead even is a
+		# draw. In classic mode a full board is simply a draw.
+		var px: int = round_points.get(1, 0)
+		var po: int = round_points.get(2, 0)
+		if win_mode == WinMode.POINTS and px != po:
+			winner = 1 if px > po else 2
+		else:
+			winner = -1
+
+	if winner != 0:
+		_end_round(winner)
+		return
+
+	if advance_turn:
 		current_player = 2 if current_player == 1 else 1
-		_update_status()
-		_update_shift_ui()
-		_refresh_turn_indicator()
+	_update_status()
+	_update_shift_ui()
+	_update_points_ui()
+	_refresh_turn_indicator()
+
+# Pay out and bank each entry returned by GameLogic.collect_unclaimed.
+# Entries are processed highest-value first so the status note leads with the
+# best of a simultaneous batch.
+func _award_points(entries: Array) -> void:
+	if entries.is_empty():
+		return
+	var ordered: Array = entries.duplicate()
+	ordered.sort_custom(func(a, b):
+		return GameLogic.pattern_points(a["pattern"]) > GameLogic.pattern_points(b["pattern"]))
+	var notes: Array = []
+	for entry in ordered:
+		var player := int(entry["player"])
+		var pattern: Variant = entry["pattern"]
+		round_points[player] = round_points.get(player, 0) + GameLogic.pattern_points(pattern)
+		if not claimed_patterns.has(player):
+			claimed_patterns[player] = {}
+		claimed_patterns[player][GameLogic.pattern_claim_key(pattern)] = true
+		notes.append(_score_note(player, pattern))
+	last_score_note = ", ".join(notes)
+
+# Which player, if any, has reached `points_target`. If both crossed it in the
+# same resolution the higher total takes the round; a dead-even tie goes to
+# the player who just moved.
+func _points_winner() -> int:
+	var px: int = round_points.get(1, 0)
+	var po: int = round_points.get(2, 0)
+	var x_hit: bool = px >= points_target
+	var o_hit: bool = po >= points_target
+	if x_hit and o_hit:
+		if px != po:
+			return 1 if px > po else 2
+		return current_player
+	if x_hit:
+		return 1
+	if o_hit:
+		return 2
+	return 0
+
+# Tie-break between two completed patterns in WinMode.FIRST: more points wins,
+# and an exact tie goes to whichever belongs to the player who just moved.
+func _outranks(candidate: Dictionary, incumbent: Dictionary) -> bool:
+	var cp := GameLogic.pattern_points(candidate["pattern"])
+	var ip := GameLogic.pattern_points(incumbent["pattern"])
+	if cp != ip:
+		return cp > ip
+	return int(candidate["player"]) == current_player and int(incumbent["player"]) != current_player
+
+# "X +2 Four corners" — one scoring event, for the status line.
+func _score_note(player: int, pattern: Variant) -> String:
+	var pname := "X" if player == 1 else "O"
+	return "%s +%d %s" % [pname, GameLogic.pattern_points(pattern), GameLogic.pattern_name(pattern)]
+
+# Close out the round: -1 for a draw, otherwise the winning mark.
+func _end_round(winner: int) -> void:
+	game_over = true
+	if winner == -1:
+		status_label.text = "It's a draw!"
+		status_label.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+		scores["draw"] += 1
+		score_draw.text = str(scores["draw"])
+	else:
+		var pname := "X" if winner == 1 else "O"
+		var text := "%s wins!" % pname
+		if last_score_note != "":
+			text = "%s — %s" % [last_score_note, text]
+		status_label.text = text
+		var col := Color(0.4, 0.8, 1.0) if winner == 1 else Color(1.0, 0.6, 0.4)
+		status_label.add_theme_color_override("font_color", col)
+		scores[winner] += 1
+		score_x.text = str(scores[1])
+		score_o.text = str(scores[2])
+		_highlight_winner(winner)
+	_disable_all_cells()
+	_update_shift_ui()
+	_update_points_ui()
+	_refresh_turn_indicator()
 
 # Shift all pieces on the board in a direction, working on any N x N board.
 # Pieces that slide off the edge are removed. Uses the current player's
@@ -367,26 +577,9 @@ func _on_shift(direction: String) -> void:
 	# empty, still-armed corner cells.
 	_refresh_bonus_icons()
 
-	# After a shift, re-check for a winner.
-	var winner := _check_winner()
-	if winner == 1 or winner == 2:
-		game_over = true
-		var pname := "X" if winner == 1 else "O"
-		status_label.text = "%s wins!" % pname
-		var col := Color(0.4, 0.8, 1.0) if winner == 1 else Color(1.0, 0.6, 0.4)
-		status_label.add_theme_color_override("font_color", col)
-		scores[winner] += 1
-		score_x.text = str(scores[1])
-		score_o.text = str(scores[2])
-		_highlight_winner(winner)
-		_disable_all_cells()
-	elif arrows_end_turn:
-		# Arrow use consumed the current player's turn; pass to the other.
-		current_player = 2 if current_player == 1 else 1
-		_update_status()
-	# Always refresh arrow-button state and turn indicator to stay in sync.
-	_update_shift_ui()
-	_refresh_turn_indicator()
+	# After pieces move, score the new board and check for a winner. A shift
+	# only ends the turn when the "arrows end turn" rule is on.
+	_resolve_board(arrows_end_turn)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -399,20 +592,17 @@ func _refresh_cells() -> void:
 		if board[i] != 0:
 			cells[i].set_mark(board[i])
 
-func _check_winner() -> int:
-	return GameLogic.check_winner(board, win_lines)
-
+# Highlight every cell of every win condition the winner currently holds.
+# In classic mode that's the one line they just completed; in points mode it
+# shows the whole set of shapes they banked and still hold. On a
+# points-on-a-full-board win the winner may hold nothing right now, in which
+# case nothing highlights.
 func _highlight_winner(winner: int) -> void:
-	for line in win_lines:
-		var all_match := true
-		for idx in line:
-			if board[idx] != winner:
-				all_match = false
-				break
-		if all_match:
-			for idx in line:
-				cells[idx].highlight_win(winner)
-			return
+	for entry in GameLogic.completed_patterns(board, win_patterns):
+		if int(entry["player"]) != winner:
+			continue
+		for idx in GameLogic.pattern_cells(entry["pattern"]):
+			cells[idx].highlight_win(winner)
 
 func _disable_all_cells() -> void:
 	for cell in cells:
@@ -420,7 +610,12 @@ func _disable_all_cells() -> void:
 
 func _update_status() -> void:
 	var pname := "X" if current_player == 1 else "O"
-	status_label.text = "%s's turn" % pname
+	var text := "%s's turn" % pname
+	# Lead with what just scored, if anything, so a point payout doesn't
+	# vanish the instant play passes to the other side.
+	if last_score_note != "":
+		text = "%s — %s" % [last_score_note, text]
+	status_label.text = text
 	var col := Color(0.4, 0.8, 1.0) if current_player == 1 else Color(1.0, 0.6, 0.4)
 	status_label.add_theme_color_override("font_color", col)
 
@@ -473,15 +668,25 @@ func _on_restart_pressed() -> void:
 	grid_cols = new_cols
 	grid_rows = new_rows
 	win_length = new_k
+
+	# Read the win-condition settings before (re)generating patterns, since
+	# both the dimensions and the enabled shapes feed into them.
+	_read_win_rule_settings()
+
 	if dimensions_changed:
 		_rebuild_board()
 	else:
-		# Same dimensions: just reset the board contents.
+		# Same dimensions: just reset the board contents and regenerate the
+		# patterns in case the enabled shapes or their point values changed.
 		for i in range(board.size()):
 			board[i] = 0
 		for cell in cells:
 			cell.reset()
 		_apply_cell_styles()
+		_rebuild_patterns()
+
+	round_points = {1: 0, 2: 0}
+	last_score_note = ""
 
 	if shift_limit_spin != null:
 		max_shifts = int(shift_limit_spin.value)
@@ -512,6 +717,12 @@ func _on_restart_pressed() -> void:
 			"bonus_mode": int(bonus_option.get_selected_id()),
 			"bonus_indices": new_bonus_indices,
 			"arrows_end_turn": arrows_end_turn_checkbox.button_pressed,
+			# Win conditions are deterministic given the dimensions plus this
+			# config, so the client rebuilds the same pattern set from it —
+			# no need to ship the patterns themselves.
+			"win_mode": win_mode,
+			"points_target": points_target,
+			"pattern_config": pattern_config,
 		})
 
 	_init_bonuses(new_bonus_indices)
@@ -524,6 +735,7 @@ func _on_restart_pressed() -> void:
 	current_player = 1
 	game_over = false
 	_update_shift_ui()
+	_update_points_ui()
 	_update_status()
 	_refresh_turn_indicator()
 	_update_mp_ui()
@@ -531,6 +743,153 @@ func _on_restart_pressed() -> void:
 func _apply_cell_styles() -> void:
 	for cell in cells:
 		cell.apply_base_style()
+
+# ---------------------------------------------------------------------------
+# Win-condition settings
+# ---------------------------------------------------------------------------
+
+# Pull the win-mode, points target, and per-shape config out of the dialog
+# controls into the applied game state. Called from _on_restart_pressed before
+# the patterns are regenerated.
+func _read_win_rule_settings() -> void:
+	if win_mode_option != null:
+		win_mode = int(win_mode_option.get_selected_id())
+	if points_target_spin != null:
+		points_target = int(points_target_spin.value)
+
+	for kind in pattern_controls:
+		var controls: Dictionary = pattern_controls[kind]
+		var entry: Dictionary = pattern_config.get(kind, {})
+		entry["enabled"] = bool(controls["check"].button_pressed)
+		entry["points"] = int(controls["points"].value)
+		if controls.has("count"):
+			entry["count"] = int(controls["count"].value)
+		pattern_config[kind] = entry
+
+	# A round with no enabled win condition can never be won, so fall back to
+	# plain k-in-a-row rather than hand the players an unwinnable board.
+	if not _any_pattern_enabled():
+		pattern_config[GameLogic.KIND_LINE]["enabled"] = true
+	_sync_pattern_controls_to_config()
+
+# True when at least one win condition is ticked AND will actually generate
+# patterns on the current board. The side-squares condition can be ticked but
+# produce nothing (too few edge cells, or too many combinations), so it only
+# counts when it's really available.
+func _any_pattern_enabled() -> bool:
+	for kind in pattern_config:
+		if not bool(pattern_config[kind].get("enabled", false)):
+			continue
+		if kind == GameLogic.KIND_EDGES:
+			var count: int = int(pattern_config[kind].get("count", 3))
+			if not GameLogic.edge_patterns_available(grid_cols, grid_rows, count):
+				continue
+		return true
+	return false
+
+# Push the applied pattern config back onto the dialog controls.
+func _sync_pattern_controls_to_config() -> void:
+	for kind in pattern_controls:
+		var controls: Dictionary = pattern_controls[kind]
+		var entry: Dictionary = pattern_config.get(kind, {})
+		controls["check"].button_pressed = bool(entry.get("enabled", false))
+		controls["points"].value = float(int(entry.get("points", 1)))
+		if controls.has("count"):
+			controls["count"].value = float(int(entry.get("count", 3)))
+	_refresh_win_rule_visibility()
+
+func _on_win_mode_selected(_index: int) -> void:
+	_refresh_win_rule_visibility()
+
+func _on_pattern_control_changed() -> void:
+	_refresh_win_rule_visibility()
+
+# Grey out the points target when it doesn't apply, and surface any warning
+# about the shapes the user has ticked. Runs live as the dialog is edited.
+func _refresh_win_rule_visibility() -> void:
+	if win_mode_option == null:
+		return
+	var points_active: bool = int(win_mode_option.get_selected_id()) == WinMode.POINTS
+	if points_target_spin != null:
+		# Only editable when it applies, and never by a connected client —
+		# rules belong to the host.
+		points_target_spin.editable = points_active and not _is_client_locked()
+	if points_target_label != null:
+		points_target_label.modulate = Color(1, 1, 1, 1.0 if points_active else 0.45)
+	if pattern_warn_label != null:
+		pattern_warn_label.text = _win_rule_warning()
+
+# True while this instance is a connected non-host, in which case the host
+# owns every rule setting and our copies of those controls are read-only.
+func _is_client_locked() -> bool:
+	return multiplayer_enabled and not is_net_host
+
+# Rebuild a pattern config from an inbound network message. The relay forwards
+# JSON, so numbers arrive as floats and any key could be missing or the wrong
+# type; this pins every field back to the expected shape and ignores kinds we
+# don't know about. Unlisted kinds fall back to disabled.
+func _sanitize_pattern_config(raw: Dictionary) -> Dictionary:
+	var out: Dictionary = {}
+	for kind in [
+			GameLogic.KIND_LINE, GameLogic.KIND_CORNERS, GameLogic.KIND_EDGES,
+			GameLogic.KIND_SQUARE, GameLogic.KIND_DIAMOND]:
+		var incoming: Variant = raw.get(kind, null)
+		var defaults: Dictionary = pattern_config.get(kind, {})
+		var entry: Dictionary = {
+			"enabled": false,
+			"points": int(defaults.get("points", GameLogic.DEFAULT_POINTS.get(kind, 1))),
+		}
+		if kind == GameLogic.KIND_EDGES:
+			entry["count"] = int(defaults.get("count", 3))
+		if typeof(incoming) == TYPE_DICTIONARY:
+			entry["enabled"] = bool(incoming.get("enabled", false))
+			entry["points"] = maxi(1, int(incoming.get("points", entry["points"])))
+			if kind == GameLogic.KIND_EDGES:
+				entry["count"] = maxi(1, int(incoming.get("count", entry["count"])))
+		out[kind] = entry
+	return out
+
+# A one-line note about a ticked shape that won't do anything on the board the
+# user is about to start. Empty string when everything checks out.
+func _win_rule_warning() -> String:
+	if pattern_controls.is_empty():
+		return ""
+	# Warn against the dimensions the dialog will actually apply, not the
+	# board currently on screen.
+	var cols := grid_cols
+	var rows := grid_rows
+	if grid_size_option != null:
+		match int(grid_size_option.get_selected_id()):
+			GridMode.THREE:
+				cols = 3; rows = 3
+			GridMode.FOUR:
+				cols = 4; rows = 4
+			GridMode.MNK:
+				rows = int(mnk_m_spin.value)
+				cols = int(mnk_n_spin.value)
+
+	var edges: Dictionary = pattern_controls[GameLogic.KIND_EDGES]
+	if bool(edges["check"].button_pressed):
+		var count := int(edges["count"].value)
+		var available: int = GameLogic.edge_indices(cols, rows).size()
+		if available < count:
+			return ("Side squares: a %dx%d board has only %d non-corner edge cells, "
+				+ "so \"any %d\" can never happen — that condition will be skipped.") % [
+					cols, rows, available, count]
+		if not GameLogic.edge_patterns_available(cols, rows, count):
+			return ("Side squares: \"any %d of %d\" edge cells is %d combinations, over the "
+				+ "%d limit — that condition will be skipped. Lower the count or the board size.") % [
+					count, available, GameLogic.edge_combination_count(cols, rows, count),
+					GameLogic.MAX_EDGE_COMBINATIONS]
+
+	var any_ticked := false
+	for kind in pattern_controls:
+		if bool(pattern_controls[kind]["check"].button_pressed):
+			any_ticked = true
+			break
+	if not any_ticked:
+		return "No win condition ticked — \"K in a row\" will be turned back on so the round can be won."
+	return ""
 
 # Called when the user clicks the "New Game" button. Pre-fills the config
 # dialog's controls with the currently-applied game settings, then shows
@@ -564,6 +923,13 @@ func _sync_ui_to_applied_state() -> void:
 		var bidx := bonus_option.get_item_index(bonus_mode)
 		if bidx >= 0:
 			bonus_option.select(bidx)
+	if win_mode_option != null:
+		var widx := win_mode_option.get_item_index(win_mode)
+		if widx >= 0:
+			win_mode_option.select(widx)
+	if points_target_spin != null:
+		points_target_spin.value = float(points_target)
+	_sync_pattern_controls_to_config()
 	_refresh_mnk_row_visibility()
 
 func _on_grid_size_selected(_index: int) -> void:
@@ -572,6 +938,19 @@ func _on_grid_size_selected(_index: int) -> void:
 	# the values only take effect when MNK is chosen. The actual grid rebuild
 	# happens when the user presses Start Game.
 	_refresh_mnk_row_visibility()
+	_apply_grid_mode_pattern_defaults(int(grid_size_option.get_selected_id()))
+	_refresh_win_rule_visibility()
+
+# Picking a grid size re-seeds the shape checkboxes to that preset's classic
+# rule set: the 4x4 preset has always included 2x2 squares and diamonds, while
+# 3x3 and MNK are strict k-in-a-row. The user is free to tick anything back on
+# afterwards — this only fires when the dropdown actually changes.
+func _apply_grid_mode_pattern_defaults(mode: int) -> void:
+	if pattern_controls.is_empty():
+		return
+	var extras_on: bool = mode == GridMode.FOUR
+	pattern_controls[GameLogic.KIND_SQUARE]["check"].button_pressed = extras_on
+	pattern_controls[GameLogic.KIND_DIAMOND]["check"].button_pressed = extras_on
 
 # The M/N/K row is always visible in the popup so the settings are
 # discoverable regardless of grid mode, but the spinboxes are editable only
@@ -687,6 +1066,17 @@ func _apply_turn_chip(panel: Panel, label: Label, active: bool, player_color: Co
 		label.add_theme_color_override("font_color", Color(0.4, 0.4, 0.45))
 	panel.add_theme_stylebox_override("panel", style)
 
+# The points readout only means anything when the round is decided on points,
+# so the row is hidden in classic mode.
+func _update_points_ui() -> void:
+	if points_row == null:
+		return
+	points_row.visible = win_mode == WinMode.POINTS
+	if not points_row.visible:
+		return
+	points_label_x.text = "X points: %d / %d" % [round_points.get(1, 0), points_target]
+	points_label_o.text = "O points: %d / %d" % [round_points.get(2, 0), points_target]
+
 func _update_shift_ui() -> void:
 	if shift_remaining_x != null:
 		shift_remaining_x.text = "X arrows: %d" % shifts_left.get(1, 0)
@@ -799,6 +1189,19 @@ func _on_mp_message(data: Variant) -> void:
 					bonus_option.select(bidx)
 				arrows_end_turn_checkbox.button_pressed = bool(data.get("arrows_end_turn", arrows_end_turn))
 				arrows_end_turn = arrows_end_turn_checkbox.button_pressed
+				# Win conditions: adopt the host's rule set verbatim, then push
+				# it onto our dialog controls so _read_win_rule_settings (run
+				# from _on_restart_pressed just below) reads back the same
+				# values rather than whatever this machine had selected.
+				var wm := int(data.get("win_mode", win_mode))
+				var widx := win_mode_option.get_item_index(wm)
+				if widx >= 0:
+					win_mode_option.select(widx)
+				points_target_spin.value = float(int(data.get("points_target", points_target)))
+				var raw_cfg: Variant = data.get("pattern_config", null)
+				if typeof(raw_cfg) == TYPE_DICTIONARY:
+					pattern_config = _sanitize_pattern_config(raw_cfg)
+				_sync_pattern_controls_to_config()
 				_refresh_mnk_row_visibility()
 			# Copy the host's rolled ★ indices so _on_restart_pressed uses
 			# them verbatim instead of rolling new ones on our end. Without
@@ -847,5 +1250,16 @@ func _update_mp_ui() -> void:
 		mnk_m_spin.editable = not client_locked
 		mnk_n_spin.editable = not client_locked
 		mnk_k_spin.editable = not client_locked
+	if win_mode_option != null:
+		win_mode_option.disabled = client_locked
+	for kind in pattern_controls:
+		var controls: Dictionary = pattern_controls[kind]
+		controls["check"].disabled = client_locked
+		controls["points"].editable = not client_locked
+		if controls.has("count"):
+			controls["count"].editable = not client_locked
+	# Owns the points-target spinbox's editable state (it also depends on the
+	# selected win mode), so run it after the lock flags above.
+	_refresh_win_rule_visibility()
 	$VBox/ButtonRow/RestartButton.disabled = client_locked
 	$VBox/ButtonRow/ResetScoresButton.disabled = client_locked

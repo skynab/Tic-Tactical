@@ -109,6 +109,24 @@ text = "O arrows: 3"
 theme_override_font_sizes/font_size = 14
 theme_override_colors/font_color = Color(1.0, 0.6, 0.4, 1)
 
+[node name="PointsRow" type="HBoxContainer" parent="VBox"]
+layout_mode = 2
+size_flags_horizontal = 4
+alignment = 1
+theme_override_constants/separation = 24
+
+[node name="PointsX" type="Label" parent="VBox/PointsRow"]
+layout_mode = 2
+text = "X points: 0 / 5"
+theme_override_font_sizes/font_size = 15
+theme_override_colors/font_color = Color(0.4, 0.8, 1.0, 1)
+
+[node name="PointsO" type="Label" parent="VBox/PointsRow"]
+layout_mode = 2
+text = "O points: 0 / 5"
+theme_override_font_sizes/font_size = 15
+theme_override_colors/font_color = Color(1.0, 0.6, 0.4, 1)
+
 [node name="Spacer2b" type="Control" parent="VBox"]
 layout_mode = 2
 custom_minimum_size = Vector2(0, 10)
@@ -301,13 +319,13 @@ theme_override_font_sizes/font_size = 18
 
 [node name="ConfigDialog" type="ConfirmationDialog" parent="."]
 title = "New Game Settings"
-size = Vector2i(520, 410)
+size = Vector2i(640, 730)
 ok_button_text = "Start Game"
 cancel_button_text = "Cancel"
 
 [node name="ConfigBox" type="VBoxContainer" parent="ConfigDialog"]
-custom_minimum_size = Vector2(480, 300)
-theme_override_constants/separation = 12
+custom_minimum_size = Vector2(600, 660)
+theme_override_constants/separation = 10
 
 [node name="GridSizeRow" type="HBoxContainer" parent="ConfigDialog/ConfigBox"]
 layout_mode = 2
@@ -418,3 +436,196 @@ theme_override_font_sizes/font_size = 14
 [node name="BonusOption" type="OptionButton" parent="ConfigDialog/ConfigBox/BonusRow"]
 layout_mode = 2
 custom_minimum_size = Vector2(130, 0)
+
+[node name="WinRuleRow" type="HBoxContainer" parent="ConfigDialog/ConfigBox"]
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 10
+
+[node name="WinModeLabel" type="Label" parent="ConfigDialog/ConfigBox/WinRuleRow"]
+layout_mode = 2
+text = "Round ends on:"
+theme_override_font_sizes/font_size = 14
+
+[node name="WinModeOption" type="OptionButton" parent="ConfigDialog/ConfigBox/WinRuleRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(190, 0)
+
+[node name="PointsTargetLabel" type="Label" parent="ConfigDialog/ConfigBox/WinRuleRow"]
+layout_mode = 2
+text = "Points to win:"
+theme_override_font_sizes/font_size = 14
+
+[node name="PointsTargetSpinBox" type="SpinBox" parent="ConfigDialog/ConfigBox/WinRuleRow"]
+layout_mode = 2
+min_value = 1.0
+max_value = 99.0
+step = 1.0
+value = 5.0
+custom_minimum_size = Vector2(70, 0)
+
+[node name="PatternHeaderRow" type="HBoxContainer" parent="ConfigDialog/ConfigBox"]
+layout_mode = 2
+alignment = 1
+
+[node name="PatternHeaderLabel" type="Label" parent="ConfigDialog/ConfigBox/PatternHeaderRow"]
+layout_mode = 2
+text = "Win conditions — tick the shapes that count, and what each is worth:"
+theme_override_font_sizes/font_size = 13
+theme_override_colors/font_color = Color(0.7, 0.7, 0.8, 1)
+
+[node name="PatternGrid" type="GridContainer" parent="ConfigDialog/ConfigBox"]
+layout_mode = 2
+size_flags_horizontal = 4
+columns = 3
+theme_override_constants/h_separation = 14
+theme_override_constants/v_separation = 6
+
+[node name="HeaderShape" type="Label" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+custom_minimum_size = Vector2(190, 0)
+text = "Shape"
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(0.6, 0.6, 0.7, 1)
+
+[node name="HeaderPoints" type="Label" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+custom_minimum_size = Vector2(80, 0)
+text = "Points"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(0.6, 0.6, 0.7, 1)
+
+[node name="HeaderExtra" type="Label" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+custom_minimum_size = Vector2(200, 0)
+text = ""
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(0.6, 0.6, 0.7, 1)
+
+[node name="LineCheck" type="CheckBox" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+button_pressed = true
+text = "K in a row"
+theme_override_font_sizes/font_size = 14
+
+[node name="LinePointsSpin" type="SpinBox" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+min_value = 1.0
+max_value = 99.0
+step = 1.0
+value = 3.0
+custom_minimum_size = Vector2(80, 0)
+
+[node name="LineExtra" type="Label" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+text = "rows, columns, diagonals"
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(0.6, 0.6, 0.7, 1)
+
+[node name="CornersCheck" type="CheckBox" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+text = "Four corners"
+theme_override_font_sizes/font_size = 14
+
+[node name="CornersPointsSpin" type="SpinBox" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+min_value = 1.0
+max_value = 99.0
+step = 1.0
+value = 2.0
+custom_minimum_size = Vector2(80, 0)
+
+[node name="CornersExtra" type="Label" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+text = "all four corner squares"
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(0.6, 0.6, 0.7, 1)
+
+[node name="EdgesCheck" type="CheckBox" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+text = "Side squares"
+theme_override_font_sizes/font_size = 14
+
+[node name="EdgesPointsSpin" type="SpinBox" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+min_value = 1.0
+max_value = 99.0
+step = 1.0
+value = 1.0
+custom_minimum_size = Vector2(80, 0)
+
+[node name="EdgesExtra" type="HBoxContainer" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="EdgeCountLabel" type="Label" parent="ConfigDialog/ConfigBox/PatternGrid/EdgesExtra"]
+layout_mode = 2
+text = "any"
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(0.6, 0.6, 0.7, 1)
+
+[node name="EdgeCountSpin" type="SpinBox" parent="ConfigDialog/ConfigBox/PatternGrid/EdgesExtra"]
+layout_mode = 2
+min_value = 2.0
+max_value = 8.0
+step = 1.0
+value = 3.0
+custom_minimum_size = Vector2(64, 0)
+
+[node name="EdgeCountSuffix" type="Label" parent="ConfigDialog/ConfigBox/PatternGrid/EdgesExtra"]
+layout_mode = 2
+text = "non-corner edge cells"
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(0.6, 0.6, 0.7, 1)
+
+[node name="SquareCheck" type="CheckBox" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+text = "2x2 square"
+theme_override_font_sizes/font_size = 14
+
+[node name="SquarePointsSpin" type="SpinBox" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+min_value = 1.0
+max_value = 99.0
+step = 1.0
+value = 2.0
+custom_minimum_size = Vector2(80, 0)
+
+[node name="SquareExtra" type="Label" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+text = "any 2x2 block"
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(0.6, 0.6, 0.7, 1)
+
+[node name="DiamondCheck" type="CheckBox" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+text = "Diamond"
+theme_override_font_sizes/font_size = 14
+
+[node name="DiamondPointsSpin" type="SpinBox" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+min_value = 1.0
+max_value = 99.0
+step = 1.0
+value = 2.0
+custom_minimum_size = Vector2(80, 0)
+
+[node name="DiamondExtra" type="Label" parent="ConfigDialog/ConfigBox/PatternGrid"]
+layout_mode = 2
+text = "4 cells around a center"
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(0.6, 0.6, 0.7, 1)
+
+[node name="PatternWarnRow" type="HBoxContainer" parent="ConfigDialog/ConfigBox"]
+layout_mode = 2
+alignment = 1
+
+[node name="PatternWarnLabel" type="Label" parent="ConfigDialog/ConfigBox/PatternWarnRow"]
+layout_mode = 2
+text = ""
+horizontal_alignment = 1
+autowrap_mode = 2
+custom_minimum_size = Vector2(560, 0)
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(1.0, 0.75, 0.35, 1)
