@@ -22,7 +22,7 @@ jobs:
       GODOT_VERSION: 4.2.2
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download Godot headless binary
         run: |
